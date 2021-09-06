@@ -31,15 +31,18 @@ def multicoreEnumeration(
     # everything that gets sent between processes will be dilled
     import dill
 
-    solvers = {"ocaml": solveForTask_ocaml, "pypy": solveForTask_pypy, "python": solveForTask_python}
+    solvers = {
+        "ocaml": solveForTask_ocaml,
+        "pypy": solveForTask_pypy,
+        "python": solveForTask_python,
+        "ocaml_context": solveForTask_ocaml_context,
+    }
     assert solver in solvers, "You must specify a valid solver. options are ocaml, pypy, or python."
 
     likelihoodModel = None
     if solver == "pypy" or solver == "python":
         # Use an all or nothing likelihood model.
         likelihoodModel = AllOrNothingLikelihoodModel(timeout=evaluationTimeout)
-
-    solver = solvers[solver]
 
     if not isinstance(g, dict):
         g = {t: g for t in tasks}
@@ -52,7 +55,7 @@ def multicoreEnumeration(
     # Make sure that each job corresponds to exactly one task
     jobs = {}
     for i, t in enumerate(tasks):
-        if testing:
+        if testing or solver == "ocaml_context":
             k = (task2grammar[t], t.request, i)
         else:
             k = (task2grammar[t], t.request)
@@ -131,6 +134,8 @@ def multicoreEnumeration(
     # What job was each ID working on?
     id2job = {}
     nextID = 0
+
+    solver = solvers[solver]
 
     while True:
         refreshJobs()
@@ -302,6 +307,103 @@ def solveForTask_ocaml(
 
     try:
         solver_file = os.path.join(get_root_dir(), "solver")
+        process = subprocess.Popen(solver_file, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        response, error = process.communicate(bytes(message, encoding="utf-8"))
+        response = json.loads(response.decode("utf-8"))
+    except OSError as exc:
+        raise exc
+
+    except:
+        print("response:", response)
+        print("error:", error)
+        print("return code: ", process.returncode)
+        with open("message", "w") as f:
+            f.write(message)
+        print("message,", message)
+        assert False, "MAX RAISE"
+
+    pc = response.get("number_enumerated", 0)  # TODO
+    frontiers = {}
+    searchTimes = {}
+    for t in tasks:
+        solutions = response[t.name]
+        frontier = Frontier(
+            [
+                FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(t.request, p))
+                for e in solutions
+                for p in [Program.parse(e["program"])]
+            ],
+            task=t,
+        )
+        frontiers[t] = frontier
+        if frontier.empty:
+            searchTimes[t] = None
+        # This is subtle:
+        # The search time we report is actually not be minimum time to find any solution
+        # Rather it is the time to find the MAP solution
+        # This is important for regression problems,
+        # where we might find something with a good prior but bad likelihood early on,
+        # and only later discovered the good high likelihood program
+        else:
+            searchTimes[t] = min((e["logLikelihood"] + e["logPrior"], e["time"]) for e in solutions)[1] + elapsedTime
+
+    return frontiers, searchTimes, pc
+
+
+def solveForTask_ocaml_context(
+    _=None,
+    elapsedTime=0.0,
+    CPUs=1,
+    g=None,
+    tasks=None,
+    lowerBound=None,
+    upperBound=None,
+    budgetIncrement=None,
+    timeout=None,
+    testing=None,  # FIXME: unused
+    likelihoodModel=None,
+    evaluationTimeout=None,
+    maximumFrontiers=None,
+):
+    import json
+
+    def taskMessage(t: Task):
+        m = {
+            "examples": [{"inputs": list(xs), "output": y} for xs, y in t.examples],
+            "name": t.name,
+            "request": t.request.json(),
+            "maximumFrontier": maximumFrontiers[t],
+            "test_examples": [{"inputs": list(xs), "output": y} for xs, y in t.test_examples]
+            if t.test_examples
+            else [],
+        }
+        if hasattr(t, "specialTask"):
+            special, extra = t.specialTask
+            m["specialTask"] = special
+            m["extras"] = extra
+        return m
+
+    message = {
+        "DSL": g.json(),
+        "task": taskMessage(tasks[0]),
+        "programTimeout": evaluationTimeout,
+        "nc": CPUs,
+        "timeout": timeout,
+        "lowerBound": lowerBound,
+        "upperBound": upperBound,
+        "budgetIncrement": budgetIncrement,
+        "verbose": False,
+        "shatter": 5 if len(tasks) == 1 and "turtle" in str(tasks[0].request) else 10,
+    }
+
+    if hasattr(tasks[0], "maxParameters") and tasks[0].maxParameters is not None:
+        message["maxParameters"] = tasks[0].maxParameters
+
+    message = json.dumps(message)
+    # uncomment this if you want to save the messages being sent to the solver
+
+    try:
+        solver_file = os.path.join(get_root_dir(), "solver_context")
         process = subprocess.Popen(solver_file, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         response, error = process.communicate(bytes(message, encoding="utf-8"))
         response = json.loads(response.decode("utf-8"))

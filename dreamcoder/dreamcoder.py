@@ -1038,7 +1038,7 @@ def commandlineArguments(
     )
     parser.add_argument(
         "--solver",
-        choices=["ocaml", "pypy", "python"],
+        choices=["ocaml", "pypy", "python", "ocaml_context"],
         default=solver,
         help="""Solver for enumeration.
                         Default: %s"""
