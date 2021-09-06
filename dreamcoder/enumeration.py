@@ -35,7 +35,7 @@ def multicoreEnumeration(
         "ocaml": solveForTask_ocaml,
         "pypy": solveForTask_pypy,
         "python": solveForTask_python,
-        "ocaml_context": solveForTask_ocaml_context,
+        "ocaml_data": solveForTask_ocaml_data,
     }
     assert solver in solvers, "You must specify a valid solver. options are ocaml, pypy, or python."
 
@@ -55,7 +55,7 @@ def multicoreEnumeration(
     # Make sure that each job corresponds to exactly one task
     jobs = {}
     for i, t in enumerate(tasks):
-        if testing or solver == "ocaml_context":
+        if testing or solver == "ocaml_data":
             k = (task2grammar[t], t.request, i)
         else:
             k = (task2grammar[t], t.request)
@@ -350,7 +350,7 @@ def solveForTask_ocaml(
     return frontiers, searchTimes, pc
 
 
-def solveForTask_ocaml_context(
+def solveForTask_ocaml_data(
     _=None,
     elapsedTime=0.0,
     CPUs=1,
@@ -403,7 +403,7 @@ def solveForTask_ocaml_context(
     # uncomment this if you want to save the messages being sent to the solver
 
     try:
-        solver_file = os.path.join(get_root_dir(), "solver_context")
+        solver_file = os.path.join(get_root_dir(), "solver_data")
         process = subprocess.Popen(solver_file, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         response, error = process.communicate(bytes(message, encoding="utf-8"))
         response = json.loads(response.decode("utf-8"))

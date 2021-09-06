@@ -1,6 +1,6 @@
-all: solver compression helmholtz protonet-tester versionDemo logoDrawString solver_context
+all: solver compression helmholtz protonet-tester versionDemo logoDrawString solver_data
 
-.PHONY: solver compression helmholtz protonet-tester versionDemo logoDrawString solver_context
+.PHONY: solver compression helmholtz protonet-tester versionDemo logoDrawString solver_data
 
 clean:
 	dune clean
@@ -38,6 +38,6 @@ logoDrawString:
 	mv solvers/logoDrawString.exe logoDrawString
 	ln -sf ../../logoDrawString data/geom/logoDrawString
 
-solver_context:
-	dune build solvers/solver_context.exe
-	mv solvers/solver_context.exe solver_context
+solver_data:
+	dune build solvers/solver_data.exe
+	mv solvers/solver_data.exe solver_data
