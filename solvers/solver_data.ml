@@ -40,67 +40,53 @@ let load_problems channel =
             with _ -> raise (Failure "could not unpack")))))
   in
 
-  let tf =
-    j |> member "task" |> fun j ->
-    let e = j |> member "examples" |> to_list in
-    let task_type = j |> member "request" |> deserialize_type in
-    let examples =
-      e
-      |> List.map ~f:(fun ex ->
-             ( ex |> member "inputs" |> to_list |> List.map ~f:unpack,
-               ex |> member "output" |> unpack ))
-    in
-    let maximum_frontier = j |> member "maximumFrontier" |> to_int in
-    let name = j |> member "name" |> to_string in
-    let test_examples =
-      j |> member "test_examples" |> to_list
-      |> List.map ~f:(fun ex ->
-             ( ex |> member "inputs" |> to_list |> List.map ~f:unpack,
-               ex |> member "output" |> unpack ))
-    in
-
-    let task =
-      let handler =
-        try
-          let special = j |> member "specialTask" |> to_string in
-          match special |> Hashtbl.find task_handler with
-          | Some handler -> handler (j |> member "extras")
-          | None ->
-              Printf.eprintf " (ocaml) FATAL: Could not find handler for %s\n" special;
-              exit 1
-        with _ -> supervised_task
-      in
-      build_task handler timeout name task_type examples test_examples
-    in
-    (task, maximum_frontier)
+  let t = j |> member "task" in
+  let e = t |> member "examples" |> to_list in
+  let task_type = t |> member "request" |> deserialize_type in
+  let examples =
+    e
+    |> List.map ~f:(fun ex ->
+           (ex |> member "inputs" |> to_list |> List.map ~f:unpack, ex |> member "output" |> unpack))
+  in
+  let maximum_frontier = t |> member "maximumFrontier" |> to_int in
+  let name = t |> member "name" |> to_string in
+  let test_examples =
+    t |> member "test_examples" |> to_list
+    |> List.map ~f:(fun ex ->
+           (ex |> member "inputs" |> to_list |> List.map ~f:unpack, ex |> member "output" |> unpack))
   in
 
-  (* Ensure that all of the tasks have the same type *)
-  (* let most_specific_type = unify_many_types (tf |> List.map ~f:(fun (t,_) -> t.task_type)) in
-   * let tf = tf |> List.map ~f:(fun (t,f) -> ({t with task_type=most_specific_type},f)) in *)
+  let task =
+    let handler =
+      try
+        let special = t |> member "specialTask" |> to_string in
+        match special |> Hashtbl.find task_handler with
+        | Some handler -> handler (t |> member "extras")
+        | None ->
+            Printf.eprintf " (ocaml) FATAL: Could not find handler for %s\n" special;
+            exit 1
+      with _ -> supervised_task
+    in
+    build_task handler timeout name task_type examples test_examples
+  in
+
   let verbose = try j |> member "verbose" |> to_bool with _ -> false in
 
   (* let _ : unit = try
          shatter_factor := (j |> member "shatter" |> to_int)
        with _ -> ()
      in *)
-  let lowerBound = try j |> member "lowerBound" |> to_number with _ -> 0. in
-
-  let upperBound = try j |> member "upperBound" |> to_number with _ -> 99. in
-
-  let budgetIncrement = try j |> member "budgetIncrement" |> to_number with _ -> 1. in
-
   let timeout = j |> member "timeout" |> to_number in
   let nc = try j |> member "nc" |> to_int with _ -> 1 in
-  (tf, g, lowerBound, upperBound, budgetIncrement, maxParameters, nc, timeout, verbose)
+  (task, maximum_frontier, g, maxParameters, nc, timeout, verbose)
 
-let export_frontiers number_enumerated tf solutions : string =
+let export_frontiers number_enumerated td solutions : string =
   let open Yojson.Basic in
   let serialization : Yojson.Basic.t =
     `Assoc
       [
         ("number_enumerated", `Int number_enumerated);
-        ( (fst tf).task.name,
+        ( td.task.name,
           `List
             (solutions
             |> List.map ~f:(fun s ->
@@ -116,11 +102,6 @@ let export_frontiers number_enumerated tf solutions : string =
   pretty_to_string serialization
 
 let (_ : unit) =
-  let tf, g, lowerBound, upperBound, budgetIncrement, mfp, nc, timeout, verbose =
-    load_problems Stdlib.stdin
-  in
-  let solutions, number_enumerated =
-    enumerate_for_task ~maxFreeParameters:mfp ~lowerBound ~upperBound ~budgetIncrement ~verbose ~nc
-      ~timeout g tf
-  in
-  export_frontiers number_enumerated tf solutions |> print_string
+  let task, maximum_frontier, g, _mfp, _nc, timeout, _verbose = load_problems Stdlib.stdin in
+  let solutions, number_enumerated = enumerate_for_task ~timeout g task maximum_frontier in
+  export_frontiers number_enumerated task solutions |> print_string

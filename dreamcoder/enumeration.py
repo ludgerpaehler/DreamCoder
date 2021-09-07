@@ -1,3 +1,4 @@
+from pickle import NONE
 from dreamcoder.likelihoodModel import AllOrNothingLikelihoodModel
 from dreamcoder.grammar import *
 from dreamcoder.utilities import get_root_dir
@@ -22,6 +23,11 @@ def multicoreEnumeration(
     """g: Either a Grammar, or a map from task to grammar.
     Returns (list-of-frontiers, map-from-task-to-search-time)"""
 
+    if solver == "ocaml_data":
+        return multicore_enumeration_with_data(
+            g, tasks, None, enumerationTimeout, solver, CPUs, maximumFrontier, verbose, evaluationTimeout, testing
+        )
+
     # We don't use actual threads but instead use the multiprocessing
     # library. This is because we need to be able to kill workers.
     # from multiprocess import Process, Queue
@@ -35,7 +41,6 @@ def multicoreEnumeration(
         "ocaml": solveForTask_ocaml,
         "pypy": solveForTask_pypy,
         "python": solveForTask_python,
-        "ocaml_data": solveForTask_ocaml_data,
     }
     assert solver in solvers, "You must specify a valid solver. options are ocaml, pypy, or python."
 
@@ -43,6 +48,8 @@ def multicoreEnumeration(
     if solver == "pypy" or solver == "python":
         # Use an all or nothing likelihood model.
         likelihoodModel = AllOrNothingLikelihoodModel(timeout=evaluationTimeout)
+
+    solver = solvers[solver]
 
     if not isinstance(g, dict):
         g = {t: g for t in tasks}
@@ -55,7 +62,7 @@ def multicoreEnumeration(
     # Make sure that each job corresponds to exactly one task
     jobs = {}
     for i, t in enumerate(tasks):
-        if testing or solver == "ocaml_data":
+        if testing:
             k = (task2grammar[t], t.request, i)
         else:
             k = (task2grammar[t], t.request)
@@ -135,8 +142,6 @@ def multicoreEnumeration(
     id2job = {}
     nextID = 0
 
-    solver = solvers[solver]
-
     while True:
         refreshJobs()
         # Don't launch a job that we are already working on
@@ -184,6 +189,197 @@ def multicoreEnumeration(
 
                 activeCPUs += allocation[j]
                 lowerBounds[j] += bi
+
+        # If nothing is running, and we just tried to launch jobs,
+        # then that means we are finished
+        if all(not s.running for s in stopwatches.values()):
+            break
+
+        # Wait to get a response
+        message = Bunch(dill.loads(q.get()))
+
+        if message.result == "failure":
+            eprint("PANIC! Exception in child worker:", message.exception)
+            eprint(message.stacktrace)
+            assert False
+        elif message.result == "success":
+            # Mark the CPUs is no longer being used and pause the stopwatch
+            activeCPUs -= id2CPUs[message.ID]
+            stopwatches[id2job[message.ID]].stop()
+
+            newFrontiers, searchTimes, pc = message.value
+            for t, f in newFrontiers.items():
+                oldBest = None if len(frontiers[t]) == 0 else frontiers[t].bestPosterior
+                frontiers[t] = frontiers[t].combine(f)
+                newBest = None if len(frontiers[t]) == 0 else frontiers[t].bestPosterior
+
+                taskToNumberOfPrograms[t] += pc
+
+                dt = searchTimes[t]
+                if dt is not None:
+                    if bestSearchTime[t] is None:
+                        bestSearchTime[t] = dt
+                    else:
+                        # newBest & oldBest should both be defined
+                        assert oldBest is not None
+                        assert newBest is not None
+                        newScore = newBest.logPrior + newBest.logLikelihood
+                        oldScore = oldBest.logPrior + oldBest.logLikelihood
+
+                        if newScore > oldScore:
+                            bestSearchTime[t] = dt
+                        elif newScore == oldScore:
+                            bestSearchTime[t] = min(bestSearchTime[t], dt)
+        else:
+            eprint("Unknown message result:", message.result)
+            assert False
+
+    eprint("We enumerated this many programs, for each task:\n\t", list(taskToNumberOfPrograms.values()))
+
+    return [frontiers[t] for t in tasks], bestSearchTime
+
+
+def multicore_enumeration_with_data(
+    g,
+    tasks,
+    _=None,
+    enumerationTimeout=None,
+    solver="ocaml_data",
+    CPUs=1,
+    maximumFrontier=None,
+    verbose=True,
+    evaluationTimeout=None,
+    testing=False,
+):
+    """g: Either a Grammar, or a map from task to grammar.
+    Returns (list-of-frontiers, map-from-task-to-search-time)"""
+
+    # We don't use actual threads but instead use the multiprocessing
+    # library. This is because we need to be able to kill workers.
+    # from multiprocess import Process, Queue
+
+    from multiprocessing import Queue
+
+    # everything that gets sent between processes will be dilled
+    import dill
+
+    solvers = {
+        "ocaml_data": solveForTask_ocaml_data,
+    }
+    assert solver in solvers, "You must specify a valid solver. options are ocaml, pypy, or python."
+
+    likelihoodModel = None
+
+    if not isinstance(g, dict):
+        g = {t: g for t in tasks}
+    task2grammar = g
+
+    # If we are not evaluating on held out testing tasks:
+    # Bin the tasks by request type and grammar
+    # If these are the same then we can enumerate for multiple tasks simultaneously
+    # If we are evaluating testing tasks:
+    # Make sure that each job corresponds to exactly one task
+    jobs = {(task2grammar[t], t.request, i): t for (i, t) in enumerate(tasks)}
+
+    disableParallelism = len(jobs) == 1
+    parallelCallback = launchParallelProcess if not disableParallelism else lambda f, *a, **k: f(*a, **k)
+    if disableParallelism:
+        eprint("Disabling parallelism on the Python side because we only have one job.")
+        eprint("If you are using ocaml, there could still be parallelism.")
+
+    # Map from task to the shortest time to find a program solving it
+    bestSearchTime = {t: None for t in task2grammar}
+
+    frontiers = {t: Frontier([], task=t) for t in task2grammar}
+
+    # For each job we keep track of how long we have been working on it
+    stopwatches = {t: Stopwatch() for t in jobs}
+
+    # Map from task to how many programs we enumerated for that task
+    taskToNumberOfPrograms = {t: 0 for t in tasks}
+
+    def numberOfHits(f):
+        return sum(e.logLikelihood > -0.01 for e in f)
+
+    def maximumFrontiers(j):
+        task = jobs[j]
+        return maximumFrontier - numberOfHits(frontiers[task])
+
+    def allocateCPUs(n, tasks):
+        allocation = {t: 0 for t in tasks}
+        while n > 0:
+            for t in tasks:
+                # During testing we use exactly one CPU per task
+                if testing and allocation[t] > 0:
+                    return allocation
+                allocation[t] += 1
+                n -= 1
+                if n == 0:
+                    break
+        return allocation
+
+    def refreshJobs(jobs):
+        return {
+            k: t
+            for (k, t) in jobs.items()
+            if numberOfHits(frontiers[t]) < maximumFrontier and stopwatches[k].elapsed <= enumerationTimeout
+        }
+
+    # Workers put their messages in here
+    q = Queue()
+
+    # How many CPUs are we using?
+    activeCPUs = 0
+
+    # How many CPUs was each job allocated?
+    id2CPUs = {}
+    # What job was each ID working on?
+    id2job = {}
+    nextID = 0
+
+    solver = solvers[solver]
+
+    while True:
+        jobs = refreshJobs(jobs)
+        # Don't launch a job that we are already working on
+        # We run the stopwatch whenever the job is being worked on
+        # freeJobs are things that we are not working on but could be
+        freeJobs = [j for j in jobs if not stopwatches[j].running and stopwatches[j].elapsed < enumerationTimeout - 0.5]
+        if freeJobs and activeCPUs < CPUs:
+            # Allocate a CPU to each of the jobs that we have made the least
+            # progress on
+            # Launch some more jobs until all of the CPUs are being used
+            availableCPUs = CPUs - activeCPUs
+            allocation = allocateCPUs(availableCPUs, freeJobs)
+            for j in freeJobs:
+                if allocation[j] == 0:
+                    continue
+                g, request = j[:2]
+                thisTimeout = enumerationTimeout - stopwatches[j].elapsed
+                eprint(
+                    "(python) Launching %s (%s) w/ %d CPUs. Timeout %f."
+                    % (request, jobs[j].name, allocation[j], thisTimeout)
+                )
+                stopwatches[j].start()
+                parallelCallback(
+                    wrapInThread(solver),
+                    q=q,
+                    g=g,
+                    ID=nextID,
+                    elapsedTime=stopwatches[j].elapsed,
+                    CPUs=allocation[j],
+                    task=jobs[j],
+                    timeout=thisTimeout,
+                    evaluationTimeout=evaluationTimeout,
+                    maximumFrontiers=maximumFrontiers(j),
+                    testing=testing,
+                    likelihoodModel=likelihoodModel,
+                )
+                id2CPUs[nextID] = allocation[j]
+                id2job[nextID] = j
+                nextID += 1
+
+                activeCPUs += allocation[j]
 
         # If nothing is running, and we just tried to launch jobs,
         # then that means we are finished
@@ -355,10 +551,7 @@ def solveForTask_ocaml_data(
     elapsedTime=0.0,
     CPUs=1,
     g=None,
-    tasks=None,
-    lowerBound=None,
-    upperBound=None,
-    budgetIncrement=None,
+    task=None,
     timeout=None,
     testing=None,  # FIXME: unused
     likelihoodModel=None,
@@ -372,7 +565,7 @@ def solveForTask_ocaml_data(
             "examples": [{"inputs": list(xs), "output": y} for xs, y in t.examples],
             "name": t.name,
             "request": t.request.json(),
-            "maximumFrontier": maximumFrontiers[t],
+            "maximumFrontier": maximumFrontiers,
             "test_examples": [{"inputs": list(xs), "output": y} for xs, y in t.test_examples]
             if t.test_examples
             else [],
@@ -385,19 +578,16 @@ def solveForTask_ocaml_data(
 
     message = {
         "DSL": g.json(),
-        "task": taskMessage(tasks[0]),
+        "task": taskMessage(task),
         "programTimeout": evaluationTimeout,
         "nc": CPUs,
         "timeout": timeout,
-        "lowerBound": lowerBound,
-        "upperBound": upperBound,
-        "budgetIncrement": budgetIncrement,
         "verbose": False,
-        "shatter": 5 if len(tasks) == 1 and "turtle" in str(tasks[0].request) else 10,
+        "shatter": 5 if "turtle" in str(task.request) else 10,
     }
 
-    if hasattr(tasks[0], "maxParameters") and tasks[0].maxParameters is not None:
-        message["maxParameters"] = tasks[0].maxParameters
+    if hasattr(task, "maxParameters") and task.maxParameters is not None:
+        message["maxParameters"] = task.maxParameters
 
     message = json.dumps(message)
     # uncomment this if you want to save the messages being sent to the solver
@@ -422,27 +612,27 @@ def solveForTask_ocaml_data(
     pc = response.get("number_enumerated", 0)  # TODO
     frontiers = {}
     searchTimes = {}
-    for t in tasks:
-        solutions = response[t.name]
-        frontier = Frontier(
-            [
-                FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(t.request, p))
-                for e in solutions
-                for p in [Program.parse(e["program"])]
-            ],
-            task=t,
-        )
-        frontiers[t] = frontier
-        if frontier.empty:
-            searchTimes[t] = None
-        # This is subtle:
-        # The search time we report is actually not be minimum time to find any solution
-        # Rather it is the time to find the MAP solution
-        # This is important for regression problems,
-        # where we might find something with a good prior but bad likelihood early on,
-        # and only later discovered the good high likelihood program
-        else:
-            searchTimes[t] = min((e["logLikelihood"] + e["logPrior"], e["time"]) for e in solutions)[1] + elapsedTime
+
+    solutions = response[task.name]
+    frontier = Frontier(
+        [
+            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(task.request, p))
+            for e in solutions
+            for p in [Program.parse(e["program"])]
+        ],
+        task=task,
+    )
+    frontiers[task] = frontier
+    if frontier.empty:
+        searchTimes[task] = None
+    # This is subtle:
+    # The search time we report is actually not be minimum time to find any solution
+    # Rather it is the time to find the MAP solution
+    # This is important for regression problems,
+    # where we might find something with a good prior but bad likelihood early on,
+    # and only later discovered the good high likelihood program
+    else:
+        searchTimes[task] = min((e["logLikelihood"] + e["logPrior"], e["time"]) for e in solutions)[1] + elapsedTime
 
     return frontiers, searchTimes, pc
 
