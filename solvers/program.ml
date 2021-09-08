@@ -69,6 +69,7 @@ let rec show_program (is_function : bool) = function
       show_program true p^" "^show_program false q
     else
       "("^show_program true p^" "^show_program false q^")"
+  | Primitive(t, "FREE_VAR", _) -> "FREE_VAR("^(string_of_type t)^")"
   | Primitive(_,n,_) -> n
   | Invented(_,i) -> "#"^show_program false i
 
@@ -450,7 +451,7 @@ let rec number_of_real_constants = function
   | Index(_) -> 0
 
 let rec number_of_free_parameters = function
-  | Primitive(_,"REAL",_) | Primitive(_,"STRING",_) | Primitive(_,"r_const",_) -> 1
+  | Primitive(_,"REAL",_) | Primitive(_,"STRING",_) | Primitive(_,"r_const",_) | Primitive(_, "FREE_VAR", _) -> 1
   | Primitive(_,_,_) -> 0
   | Invented(_,b) | Abstraction(b) -> number_of_free_parameters b
   | Apply(f,x) -> number_of_free_parameters f + number_of_free_parameters x
