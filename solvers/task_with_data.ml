@@ -20,6 +20,11 @@ class task_val ty' values' (known_share' : float) =
     val mutable known_share = known_share'
   end
 
+class no_data_task_val ty' =
+  object
+    inherit task_val ty' [] 0.
+  end
+
 type task_def = { task : task; train_inputs : task_v list; train_outputs : task_v }
 
 let build_task (handler : ?timeout:float -> string -> tp -> ('a list * 'b) list -> task) timeout

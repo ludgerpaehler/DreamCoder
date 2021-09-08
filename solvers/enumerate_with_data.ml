@@ -10,12 +10,12 @@ open Program
 open Enumeration
 open Program_with_data
 module Heap = Pairing_heap
-module Varmap = Map.Make (String)
 
 type solution_ctx = {
-  known_vars : task_val Varmap.t;
-  unknown_vars : task_val Varmap.t;
-  operations : program_block list;
+  known_vars : (string, task_val) Hashtbl.t;
+  unknown_vars : (string, task_val) Hashtbl.t;
+  operations : program_block list ref;
+  created_vars : int ref;
 }
 
 type block_prototype = {
@@ -30,14 +30,15 @@ let initial_block_prototype request (g : grammar) inputs outputs =
 let create_start_solution (td : task_def) : solution_ctx =
   {
     known_vars =
-      Varmap.of_alist_exn
+      Hashtbl.of_alist_exn (module String)
       @@ List.mapi
            ~f:(fun i tv -> ("$i" ^ string_of_int i, new task_val tv#get_ty tv#get_values 1.))
            td.train_inputs;
     unknown_vars =
-      Varmap.of_alist_exn
+      Hashtbl.of_alist_exn (module String)
       @@ [ ("$out", new task_val td.train_outputs#get_ty td.train_outputs#get_values 0.) ];
-    operations = [];
+    operations = ref [];
+    created_vars = ref 0;
   }
 
 let enumeration_timeout = ref Float.max_value
@@ -179,10 +180,10 @@ let enumerate_for_task (g : contextual_grammar) ?(_verbose = true) ~timeout td m
         if c < 0. then -1 else if c > 0. then 1 else 0)
       ()
   in
-  Varmap.iteri start_solution_ctx.known_vars ~f:(fun ~key ~data ->
+  Hashtbl.iteri start_solution_ctx.known_vars ~f:(fun ~key ~data ->
       List.iter (get_candidates_for_known_var start_solution_ctx key data g) ~f:(fun candidate ->
           Heap.add pq (start_solution_ctx, candidate)));
-  Varmap.iteri start_solution_ctx.unknown_vars ~f:(fun ~key ~data ->
+  Hashtbl.iteri start_solution_ctx.unknown_vars ~f:(fun ~key ~data ->
       List.iter (get_candidates_for_unknown_var start_solution_ctx key data g) ~f:(fun candidate ->
           Heap.add pq (start_solution_ctx, candidate)));
 
@@ -194,12 +195,19 @@ let enumerate_for_task (g : contextual_grammar) ?(_verbose = true) ~timeout td m
     |> List.iter ~f:(fun child ->
            (* let open Float in *)
            if state_finished child then (
-             let _p, _ts = capture_free_vars child.skeleton in
-             (* Printf.eprintf "%s\t%s\t%s\t%s\n"
-               (string_of_program child.skeleton)
-               (string_of_program p)
-               ("[" ^ join ~separator:" " (List.map ts ~f:string_of_type) ^ "]")
-               (string_of_type @@ closed_inference p); *)
+             let p, ts = capture_free_vars child.skeleton in
+
+             let new_vars =
+               ts
+               |> List.map ~f:(fun t ->
+                      let ntv = new no_data_task_val t in
+                      let key = "v" ^ string_of_int !(s_ctx.created_vars) in
+                      s_ctx.created_vars := !(s_ctx.created_vars) + 1;
+                      Hashtbl.add_exn s_ctx.unknown_vars ~key ~data:ntv;
+                      key)
+             in
+             let new_block = { p; inputs = new_vars; outputs = bp.output_vals } in
+             s_ctx.operations := new_block :: !(s_ctx.operations);
              ())
            else
              Heap.add pq
