@@ -11,6 +11,51 @@ open Timeout
 module Heap = Pairing_heap
 
 module SolutionCtx = struct
+  type t = {
+    known_vars : (string, task_val) Hashtbl_intf.Hashtbl.t;
+    unknown_vars : (string, task_val) Hashtbl_intf.Hashtbl.t;
+    example_count : int;
+    mutable operations : program_block list;
+    ops_by_input : (string, program_block list) Hashtbl_intf.Hashtbl.t;
+    ops_by_output : (string, program_block list) Hashtbl_intf.Hashtbl.t;
+    mutable created_vars : int;
+    parent : t option;
+    mutable children : t list;
+    timeout : float;
+  }
+
+  let create ?parent' (known_vars' : (string * task_val) list)
+      (unknown_vars' : (string * task_val) list) timeout' =
+    {
+      known_vars = Hashtbl.of_alist_exn (module String) known_vars';
+      unknown_vars = Hashtbl.of_alist_exn (module String) unknown_vars';
+      example_count =
+        (match unknown_vars' with [] -> 0 | (_, tv) :: _ -> List.length tv#get_values);
+      operations = [];
+      ops_by_input = Hashtbl.create (module String);
+      ops_by_output = Hashtbl.create (module String);
+      created_vars = 0;
+      parent = parent';
+      children = [];
+      timeout = timeout';
+    }
+
+  let iter_known_vars sc = Hashtbl.iteri sc.known_vars
+
+  let iter_unknown_vars sc = Hashtbl.iteri sc.unknown_vars
+
+  let filter_map_known_vars sc ~f = Hashtbl.filter_mapi sc.known_vars ~f |> Hashtbl.to_alist
+
+  let get_known_var sc k = Hashtbl.find_exn sc.known_vars k
+
+  let get_unknown_var sc k = Hashtbl.find_exn sc.unknown_vars k
+
+  let create_next_var sc =
+    sc.created_vars <- sc.created_vars + 1;
+    sc.created_vars - 1
+
+  let add_unknown_var sc key var = Hashtbl.add_exn sc.unknown_vars ~key ~data:var
+
   let try_evaluate_program p xs timeout =
     try
       run_for_interval timeout (fun () ->
@@ -30,46 +75,110 @@ module SolutionCtx = struct
     | EnumerationTimeout -> raise EnumerationTimeout
     | _ -> None
 
-  type t = {
-    known_vars : (string, task_val) Hashtbl_intf.Hashtbl.t;
-    unknown_vars : (string, task_val) Hashtbl_intf.Hashtbl.t;
-    example_count : int;
-    mutable operations : program_block list;
-    mutable created_vars : int;
-    parent : t option;
-    mutable children : t list;
-    timeout : float;
-  }
+  let try_run_block sc block (inputs : unit ref list list) =
+    let input_vals =
+      List.fold inputs
+        ~init:(List.init sc.example_count ~f:(fun _ -> []))
+        ~f:(fun acc vals -> List.zip_exn acc vals |> List.map ~f:(fun (a, v) -> v :: a))
+      |> List.map ~f:List.rev
+    in
+    let expected_outputs = List.map block.outputs ~f:(get_unknown_var sc) in
+    let out_matchers = List.map expected_outputs ~f:(fun exp -> exp#get_matching_seq) in
+    let p = analyze_lazy_evaluation block.p in
 
-  let create ?parent' (known_vars' : (string * task_val) list)
-      (unknown_vars' : (string * task_val) list) timeout' =
-    {
-      known_vars = Hashtbl.of_alist_exn (module String) known_vars';
-      unknown_vars = Hashtbl.of_alist_exn (module String) unknown_vars';
-      example_count =
-        (match unknown_vars' with [] -> 0 | (_, tv) :: _ -> List.length tv#get_values);
-      operations = [];
-      created_vars = 0;
-      parent = parent';
-      children = [];
-      timeout = timeout';
-    }
+    let rec loop (inputs : unit ref list list) out_matchers bm outs =
+      match inputs with
+      | [] ->
+          ( bm,
+            List.fold (List.rev outs)
+              ~init:(List.init (List.length block.outputs) ~f:(fun _ -> []))
+              ~f:(fun acc vals -> List.zip_exn acc vals |> List.map ~f:(fun (a, v) -> v :: a)) )
+      | xs :: rest -> (
+          let v = try_evaluate_program p xs sc.timeout in
 
-  let iter_known_vars sc = Hashtbl.iteri sc.known_vars
+          match v with
+          | None -> (NoMatch', [])
+          | _ -> (
+              let v = get_some v in
+              let rec loop_matchers (outs : unit ref list)
+                  (matchers : (unit ref -> match_result) Seq.t list) res next_matchers =
+                match outs with
+                | [] -> (res, List.rev next_matchers)
+                | ov :: rest_out -> (
+                    match matchers with
+                    | [] -> raise (Failure "Dimentions mismatch")
+                    | matcher :: rest_matchers -> (
+                        match matcher () with
+                        | Seq.Nil -> raise (Failure "Dimentions mismatch")
+                        | Seq.Cons (matcher_func, next_matcher) -> (
+                            let m = matcher_func ov in
+                            match m with
+                            | NoMatch' -> (NoMatch', [])
+                            | _ ->
+                                loop_matchers rest_out rest_matchers (minimal_match res m)
+                                  (next_matcher :: next_matchers))))
+              in
+              let m, next_matchers = loop_matchers v out_matchers Strict' [] in
+              match m with
+              | NoMatch' -> (NoMatch', [])
+              | _ -> loop rest next_matchers (minimal_match bm m) (v :: outs)))
+    in
 
-  let iter_unknown_vars sc = Hashtbl.iteri sc.unknown_vars
+    loop input_vals out_matchers Strict' []
 
-  let map_filter_known_vars sc = Hashtbl.filter_mapi sc.known_vars
+  let try_run_block_with_downstream sc block =
+    let rec loop blocks bm outs =
+      match blocks with
+      | [] -> (bm, Some outs)
+      | bl :: rest -> (
+          let inputs =
+            List.map block.inputs ~f:(fun key ->
+                match Hashtbl.find outs key with
+                | None -> (get_known_var sc key)#get_values
+                | Some vals -> vals)
+          in
+          let m = try_run_block sc bl inputs in
+          match m with
+          | NoMatch', _ -> (NoMatch', None)
+          | mv, outputs ->
+              List.iter (List.zip_exn bl.outputs outputs) ~f:(fun (key, data) ->
+                  Hashtbl.add_exn outs ~key ~data);
+              let next_blocks =
+                List.concat
+                  (List.map bl.outputs ~f:(fun key -> Hashtbl.find_multi sc.ops_by_input key))
+              in
+              loop (next_blocks @ rest) (minimal_match mv bm) outs)
+    in
+    loop [ block ] Strict' (Hashtbl.create (module String))
 
-  let get_known_var sc k = Hashtbl.find_exn sc.known_vars k
+  let add_new_block sc block =
+    let unknown_inputs =
+      List.filter block.inputs ~f:(fun key -> is_some @@ Hashtbl.find sc.unknown_vars key)
+    in
+    if List.is_empty unknown_inputs then (
+      let best_match, _outputs = try_run_block_with_downstream sc block in
 
-  let get_unknown_var sc k = Hashtbl.find_exn sc.unknown_vars k
-
-  let create_next_var sc =
-    sc.created_vars <- sc.created_vars + 1;
-    sc.created_vars - 1
-
-  let add_unknown_var sc key var = Hashtbl.add_exn sc.unknown_vars ~key ~data:var
+      match best_match with
+      | NoMatch' -> sc
+      | Strict' ->
+          (* TODO: move variable to known ones and create a branch *)
+          sc.operations <- block :: sc.operations;
+          List.iter block.inputs ~f:(fun key -> Hashtbl.add_multi sc.ops_by_input ~key ~data:block);
+          List.iter block.outputs ~f:(fun key ->
+              Hashtbl.add_multi sc.ops_by_output ~key ~data:block);
+          sc
+      | _ ->
+          (* TODO: move variable to known ones and create a branch *)
+          sc.operations <- block :: sc.operations;
+          List.iter block.inputs ~f:(fun key -> Hashtbl.add_multi sc.ops_by_input ~key ~data:block);
+          List.iter block.outputs ~f:(fun key ->
+              Hashtbl.add_multi sc.ops_by_output ~key ~data:block);
+          sc)
+    else (
+      sc.operations <- block :: sc.operations;
+      List.iter block.inputs ~f:(fun key -> Hashtbl.add_multi sc.ops_by_input ~key ~data:block);
+      List.iter block.outputs ~f:(fun key -> Hashtbl.add_multi sc.ops_by_output ~key ~data:block);
+      sc)
 
   let get_matches sc keys =
     let rec get_matches' ks prev_matched_ks prev_missed_ks =
@@ -77,78 +186,23 @@ module SolutionCtx = struct
       | [] -> prev_matched_ks
       | k :: ks' ->
           let kv = Hashtbl.find_exn sc.unknown_vars k in
-          let _matcher_seq = kv#get_matching_seq in
+          let matched_inputs =
+            filter_map_known_vars sc ~f:(fun ~key:_ ~data ->
+                match kv#match_with_task_val data with
+                | NoMatch', _ -> None
+                | m, pr -> Some (m, get_some pr))
+          in
+          let _new_scs =
+            List.map matched_inputs ~f:(fun (key, (_, pr)) ->
+                let new_block = { p = pr; inputs = [ key ]; outputs = [ k ] } in
+                (* TODO: add new block to new child context *)
+                let _new_sctx = add_new_block sc new_block in
+                ())
+          in
           0 :: get_matches' ks' prev_matched_ks (k :: prev_missed_ks)
     in
     let _matches = get_matches' keys [] [] in
     [ 1 ]
-
-  let add_new_block sc block =
-    let unknown_inputs =
-      List.filter block.inputs ~f:(fun key -> is_some @@ Hashtbl.find sc.unknown_vars key)
-    in
-    if List.is_empty unknown_inputs then (
-      let inputs = List.map block.inputs ~f:(fun key -> (get_known_var sc key)#get_values) in
-      let input_vals =
-        List.fold inputs
-          ~init:(List.init sc.example_count ~f:(fun _ -> []))
-          ~f:(fun acc vals -> List.zip_exn acc vals |> List.map ~f:(fun (a, v) -> v :: a))
-        |> List.map ~f:List.rev
-      in
-      let expected_outputs = List.map block.outputs ~f:(get_unknown_var sc) in
-      let out_matchers = List.map expected_outputs ~f:(fun exp -> exp#get_matching_seq) in
-      let p = analyze_lazy_evaluation block.p in
-
-      let best_match, _outputs =
-        let rec loop inputs out_matchers bm outs =
-          match inputs with
-          | [] -> (bm, [ List.rev outs ])
-          | xs :: rest -> (
-              let v = try_evaluate_program p xs sc.timeout in
-
-              match v with
-              | None -> (NoMatch', [])
-              | _ -> (
-                  let v = get_some v in
-                  let rec loop_matchers (outs : unit ref list)
-                      (matchers : (unit ref -> match_result) Seq.t list) res next_matchers =
-                    match outs with
-                    | [] -> (res, List.rev next_matchers)
-                    | ov :: rest_out -> (
-                        match matchers with
-                        | [] -> raise (Failure "Dimentions mismatch")
-                        | matcher :: rest_matchers -> (
-                            match matcher () with
-                            | Seq.Nil -> raise (Failure "Dimentions mismatch")
-                            | Seq.Cons (matcher_func, next_matcher) -> (
-                                let m = matcher_func ov in
-                                match m with
-                                | NoMatch' -> (NoMatch', [])
-                                | _ ->
-                                    loop_matchers rest_out rest_matchers (minimal_match res m)
-                                      (next_matcher :: next_matchers))))
-                  in
-                  let m, next_matchers = loop_matchers v out_matchers Strict' [] in
-                  match m with
-                  | NoMatch' -> (NoMatch', [])
-                  | _ -> loop rest next_matchers (minimal_match bm m) (v :: outs)))
-        in
-
-        loop input_vals out_matchers Strict' []
-      in
-
-      match best_match with
-      | NoMatch' ->
-          Printf.eprintf "No match: %s\n" (string_of_program block.p);
-          Stdlib.flush_all ();
-          ()
-      | _ ->
-          (* TODO: move variable to known ones and create a branch *)
-          sc.operations <- block :: sc.operations;
-          ())
-    else sc.operations <- block :: sc.operations;
-    let _matches = get_matches sc unknown_inputs in
-    ()
 end
 
 type block_prototype = {
@@ -316,7 +370,7 @@ let enumerate_for_task (g : contextual_grammar) ?(_verbose = true) ~timeout td m
     block_state_successors ~maxFreeParameters g bp.state
     |> List.iter ~f:(fun child ->
            (* let open Float in *)
-           if state_finished child then (
+           if state_finished child then
              let p, ts = capture_free_vars child.skeleton in
 
              let new_vars =
@@ -328,9 +382,9 @@ let enumerate_for_task (g : contextual_grammar) ?(_verbose = true) ~timeout td m
                       key)
              in
              let new_block = { p; inputs = new_vars; outputs = bp.output_vals } in
-             SolutionCtx.add_new_block s_ctx new_block;
-             (* match_fields s_ctx new_vars; *)
-             ())
+             let new_sctx = SolutionCtx.add_new_block s_ctx new_block in
+             let _matches = SolutionCtx.get_matches new_sctx new_block.inputs in
+             ()
            else
              Heap.add pq
                (s_ctx, { state = child; input_vals = bp.input_vals; output_vals = bp.output_vals }))
