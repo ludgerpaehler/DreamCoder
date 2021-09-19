@@ -1,4 +1,5 @@
 import datetime
+from functools import wraps
 
 import dill
 
@@ -143,6 +144,38 @@ def explorationCompression(*arguments, **keywords):
     return r
 
 
+def manage_enumerator_service(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if kwargs.get("solver") == "julia":
+            import redis
+            from subprocess import TimeoutExpired
+            r = redis.Redis(host="localhost", port=6379, db=0)
+            r.flushdb()
+            solver_file = os.path.join(get_root_dir(), "julia_enumerator", "src", "solver.jl")
+            julia_args = ["-p", str(kwargs.get("CPUs", 1))]
+            env = {"JULIA_PROJECT": os.path.join(get_root_dir(), "julia_enumerator")}
+            env.update(os.environ)
+            eprint("Starting julia enumerator service")
+            solver_process = subprocess.Popen(
+                ["julia"] + julia_args + [solver_file], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env
+            )
+            try:
+                yield from f(*args, **kwargs)
+            finally:
+                eprint("Stopping julia enumerator service")
+                r.rpush("commands", "stop")
+                try:
+                    solver_process.wait(10)
+                except TimeoutExpired:
+                    solver_process.kill()
+        else:
+            yield from f(*args, **kwargs)
+
+    return wrapper
+
+
+@manage_enumerator_service
 def ecIterator(
     grammar,
     tasks,
@@ -1038,7 +1071,7 @@ def commandlineArguments(
     )
     parser.add_argument(
         "--solver",
-        choices=["ocaml", "pypy", "python", "ocaml_data"],
+        choices=["ocaml", "pypy", "python", "julia"],
         default=solver,
         help="""Solver for enumeration.
                         Default: %s"""
