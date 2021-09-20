@@ -239,6 +239,11 @@ def multicoreEnumeration(
     return [frontiers[t] for t in tasks], bestSearchTime
 
 
+class WorkerError(Exception):
+    def __init__(self, message) -> None:
+        super().__init__("Got error in enumeration worker:\n" + message)
+
+
 def multicore_enumeration_with_data(
     g,
     tasks,
@@ -308,6 +313,8 @@ def multicore_enumeration_with_data(
                         bestSearchTime[t] = dt
                     elif newScore == oldScore:
                         bestSearchTime[t] = min(bestSearchTime[t], dt)
+        except WorkerError as e:
+            raise
         except:
             eprint("Failure processing response: ", response)
             raise
@@ -453,6 +460,7 @@ def get_task_message(task, g, timeout, maximum_frontiers):
     message = {
         "DSL": g.json(),
         "task": m,
+        "name": task.name,
         "programTimeout": timeout,
         "timeout": timeout,
         "verbose": False,
@@ -470,9 +478,15 @@ def parse_result_message(response):
 
     print(response)
     response = json.loads(response.decode("utf-8"))
-    pc = response.get("number_enumerated", 0)  # TODO
 
     task_name = response["name"]
+    if response["status"] == "error":
+        raise WorkerError(response["payload"])
+    else:
+        response = response["payload"]
+    pc = response.get("number_enumerated", 0)  # TODO
+
+
     solutions = response["solutions"]
     request = response["request"]
     frontier_entries = [

@@ -152,7 +152,7 @@ def manage_enumerator_service(f):
             from subprocess import TimeoutExpired
             r = redis.Redis(host="localhost", port=6379, db=0)
             r.flushdb()
-            solver_file = os.path.join(get_root_dir(), "julia_enumerator", "src", "solver.jl")
+            solver_file = os.path.join(get_root_dir(), "julia_enumerator", "src", "main.jl")
             julia_args = ["-p", str(kwargs.get("CPUs", 1))]
             env = {"JULIA_PROJECT": os.path.join(get_root_dir(), "julia_enumerator")}
             env.update(os.environ)
