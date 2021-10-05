@@ -486,11 +486,9 @@ def parse_result_message(response):
         response = response["payload"]
     pc = response.get("number_enumerated", 0)  # TODO
 
-
     solutions = response["solutions"]
-    request = response["request"]
     frontier_entries = [
-        FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(request, p))
+        FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=e["logPrior"])
         for e in solutions
         for p in [Program.parse(e["program"])]
     ]
