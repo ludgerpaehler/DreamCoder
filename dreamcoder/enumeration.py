@@ -261,7 +261,9 @@ def multicore_enumeration_with_data(
     # library. This is because we need to be able to kill workers.
     # from multiprocess import Process, Queue
 
-    tasks = tasks[:1]  # TODO: remove later
+    tasks = [t for t in tasks if t.name == "empty"]
+    # tasks = [t for t in tasks if t.name == "head"]
+    # tasks = tasks[:1]  # TODO: remove later
     # everything that gets sent between processes will be dilled
 
     assert solver == "julia"
@@ -271,9 +273,9 @@ def multicore_enumeration_with_data(
     task2grammar = g
 
     # Map from task to the shortest time to find a program solving it
-    bestSearchTime = {t: None for t in task2grammar}
+    bestSearchTime = {t: None for t in tasks}
 
-    frontiers = {t: Frontier([], task=t) for t in task2grammar}
+    frontiers = {t: Frontier([], task=t) for t in tasks}
 
     # Map from task to how many programs we enumerated for that task
     taskToNumberOfPrograms = {t: 0 for t in tasks}
@@ -290,8 +292,7 @@ def multicore_enumeration_with_data(
     for _ in range(len(tasks)):
         response = r.blpop("results")[1]
         try:
-            task_name, frontier_entries, dt, pc = parse_result_message(response)
-            t = tasks_by_name[task_name]
+            t, frontier_entries, dt, pc = parse_result_message(response, tasks_by_name, task2grammar)
             f = Frontier(frontier_entries, t)
             oldBest = None if len(frontiers[t]) == 0 else frontiers[t].bestPosterior
             frontiers[t] = frontiers[t].combine(f)
@@ -473,13 +474,14 @@ def get_task_message(task, g, timeout, maximum_frontiers):
     return json.dumps(message)
 
 
-def parse_result_message(response):
+def parse_result_message(response, tasks_by_name, task2grammar):
     import json
 
     print(response)
     response = json.loads(response.decode("utf-8"))
 
     task_name = response["name"]
+    task = tasks_by_name[task_name]
     if response["status"] == "error":
         raise WorkerError(response["payload"])
     else:
@@ -487,8 +489,10 @@ def parse_result_message(response):
     pc = response.get("number_enumerated", 0)  # TODO
 
     solutions = response["solutions"]
+    request = task.request
+    g = task2grammar[task]
     frontier_entries = [
-        FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=e["logPrior"])
+        FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(request, p))
         for e in solutions
         for p in [Program.parse(e["program"])]
     ]
@@ -503,7 +507,7 @@ def parse_result_message(response):
     else:
         searchTime = min((e["logLikelihood"] + e["logPrior"], e["time"]) for e in solutions)[1]
 
-    return task_name, frontier_entries, searchTime, pc
+    return task, frontier_entries, searchTime, pc
 
 
 def solveForTask_pypy(
