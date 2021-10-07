@@ -261,7 +261,8 @@ def multicore_enumeration_with_data(
     # library. This is because we need to be able to kill workers.
     # from multiprocess import Process, Queue
 
-    tasks = [t for t in tasks if t.name == "empty"]
+    # tasks = [t for t in tasks if t.name == "empty"]
+    # tasks = [t for t in tasks if t.name == "append-index-k with k=5"]
     # tasks = [t for t in tasks if t.name == "head"]
     # tasks = tasks[:1]  # TODO: remove later
     # everything that gets sent between processes will be dilled

@@ -301,6 +301,7 @@ class Grammar(object):
                 return ls
 
             if not silent:
+                eprint("Expression is", expression)
                 eprint(f, "Not in candidates")
                 eprint("Candidates is", candidates)
                 # eprint("grammar:", grammar.productions)
