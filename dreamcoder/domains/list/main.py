@@ -370,13 +370,13 @@ def main(args):
     timestamp = datetime.datetime.now().isoformat()
     outputDirectory = "experimentOutputs/list/%s"%timestamp
     os.system("mkdir -p %s"%outputDirectory)
-    
+
     args.update({
         "featureExtractor": extractor,
         "outputPrefix": "%s/list"%outputDirectory,
-        "evaluationTimeout": 0.0005,
+        # "evaluationTimeout": 0.0005,
     })
-    
+
 
     eprint("Got {} list tasks".format(len(tasks)))
     split = args.pop("split")

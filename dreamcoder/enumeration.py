@@ -25,7 +25,7 @@ def multicoreEnumeration(
 
     if solver == "julia":
         return multicore_enumeration_with_data(
-            g, tasks, enumerationTimeout, solver, CPUs, maximumFrontier, verbose, testing
+            g, tasks, enumerationTimeout, evaluationTimeout, solver, CPUs, maximumFrontier, verbose, testing
         )
 
     # We don't use actual threads but instead use the multiprocessing
@@ -248,6 +248,7 @@ def multicore_enumeration_with_data(
     g,
     tasks,
     enumerationTimeout=None,
+    evaluationTimeout=None,
     solver="julia",
     CPUs=1,
     maximumFrontier=None,
@@ -263,6 +264,8 @@ def multicore_enumeration_with_data(
 
     # tasks = [t for t in tasks if t.name == "empty"]
     # tasks = [t for t in tasks if t.name == "append-index-k with k=5"]
+    # tasks = [t for t in tasks if t.name == "fibonacci"]
+    # tasks = [t for t in tasks if t.name == "is-mod-k with k=1"]
     # tasks = [t for t in tasks if t.name == "head"]
     # tasks = tasks[:1]  # TODO: remove later
     # everything that gets sent between processes will be dilled
@@ -287,7 +290,7 @@ def multicore_enumeration_with_data(
 
     r = redis.Redis(host="localhost", port=6379, db=0)
     for task in tasks:
-        m = get_task_message(task, task2grammar[task], enumerationTimeout, maximumFrontier)
+        m = get_task_message(task, task2grammar[task], enumerationTimeout, evaluationTimeout, maximumFrontier)
         r.rpush("tasks", m)
 
     for _ in range(len(tasks)):
@@ -442,7 +445,7 @@ def solveForTask_ocaml(
     return frontiers, searchTimes, pc
 
 
-def get_task_message(task, g, timeout, maximum_frontiers):
+def get_task_message(task, g, timeout, program_timeout, maximum_frontiers):
     import json
 
     m = {
@@ -463,7 +466,7 @@ def get_task_message(task, g, timeout, maximum_frontiers):
         "DSL": g.json(),
         "task": m,
         "name": task.name,
-        "programTimeout": timeout,
+        "programTimeout": program_timeout,
         "timeout": timeout,
         "verbose": False,
         "shatter": 5 if "turtle" in str(task.request) else 10,
@@ -484,6 +487,7 @@ def parse_result_message(response, tasks_by_name, task2grammar):
     task_name = response["name"]
     task = tasks_by_name[task_name]
     if response["status"] == "error":
+        eprint("Error in task", task_name)
         raise WorkerError(response["payload"])
     else:
         response = response["payload"]
@@ -492,11 +496,17 @@ def parse_result_message(response, tasks_by_name, task2grammar):
     solutions = response["solutions"]
     request = task.request
     g = task2grammar[task]
-    frontier_entries = [
-        FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(request, p))
-        for e in solutions
-        for p in [Program.parse(e["program"])]
-    ]
+    frontier_entries = []
+    for e in solutions:
+        p = Program.parse(e["program"])
+        try:
+            frontier_entries.append(
+            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(request, p))
+        )
+        except:
+            eprint(p)
+            eprint(request)
+            raise
     if not frontier_entries:
         searchTime = None
     # This is subtle:
