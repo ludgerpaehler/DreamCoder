@@ -29,6 +29,12 @@ class Grammar(object):
 
         self.expression2likelihood = dict((p, l) for l, _, p in productions)
         self.expression2likelihood[Index(0)] = self.logVariable
+        self.type_weights = {
+            "list": 1.0,
+            "int": 1.0,
+            "bool": 1.0,
+            "float": 1.0,
+        }
 
     def randomWeights(self, r):
         """returns a new grammar with random weights drawn from r. calls `r` w/ old weight"""
@@ -122,6 +128,7 @@ class Grammar(object):
         j = {
             "logVariable": self.logVariable,
             "productions": [{"expression": str(p), "logProbability": l} for l, _, p in self.productions],
+            "type_weights": self.type_weights,
         }
         if self.continuationType is not None:
             j["continuationType"] = self.continuationType.json()
