@@ -501,7 +501,7 @@ def parse_result_message(response, tasks_by_name, task2grammar):
         p = Program.parse(e["program"])
         try:
             frontier_entries.append(
-            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(request, p))
+            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=e["logPrior"])
         )
         except:
             eprint(p)

@@ -140,6 +140,7 @@ class Program(object):
     @staticmethod
     def parse(s):
         s = parseSExpression(s)
+        # eprint(s)
         def p(e):
             if isinstance(e,list):
                 if e[0] == '#':
@@ -147,13 +148,26 @@ class Program(object):
                     return Invented(p(e[1]))
                 if e[0] == 'lambda':
                     assert len(e) == 2
-                    return Abstraction(p(e[1]))                    
+                    return Abstraction(p(e[1]))
+                if e[0] == 'let':
+                    if len(e) == 6:
+                        return LetClause(e[1], p(e[3]), p(e[5]))
+                    elif len(e) > 6:
+                        return MultiLetClause(e[1:-4], p(e[-3]), p(e[-1]))
+                if e[0] == 'rev':
+                    assert len(e) == 4
+                    return Reversed(p(e[1]), [p(v) for v in e[3]])
                 f = p(e[0])
                 for x in e[1:]:
                     f = Application(f,p(x))
                 return f
             assert isinstance(e,str)
-            if e[0] == '$': return Index(int(e[1:]))
+            if e[0] == '$':
+                try:
+                    return Index(int(e[1:]))
+                except ValueError:
+                    return FreeVariable(e[1:])
+            if e == "FREE_VAR": return FreeVariable(None)
             if e in Primitive.GLOBALS: return Primitive.GLOBALS[e]
             if e == '??' or e == '?': return FragmentVariable.single
             if e == '<HOLE>': return Hole.single
@@ -209,8 +223,8 @@ class Program(object):
             if s in Primitive.GLOBALS: return Primitive.GLOBALS[s]
             assert False, f"could not parse {s}"
         return p(s, [])
-                
-                
+
+
 
 
 class Application(Program):
@@ -262,7 +276,7 @@ class Application(Program):
         self.x.annotateTypes(context, environment)
         r = context.makeVariable()
         context.unify(arrow(self.x.annotatedType, r), self.f.annotatedType)
-        self.annotatedType = r.applyMutable(context)        
+        self.annotatedType = r.applyMutable(context)
 
 
     @property
@@ -575,7 +589,7 @@ class Abstraction(Program):
     def _parse(s,n):
         n = Program.parseConstant(s,n,
                                   '(\\','(lambda','(\u03bb')
-            
+
         while n < len(s) and s[n].isspace(): n += 1
 
         b, n = Program._parse(s,n)
@@ -736,9 +750,9 @@ class Invented(Program):
             n += 1
             b,n = Program._parse(s,n)
             return Invented(b),n
-        
+
         raise ParseFailure(s)
-        
+
 
 class FragmentVariable(Program):
     def __init__(self): pass
@@ -840,6 +854,52 @@ class Hole(Program):
 
 
 Hole.single = Hole()
+
+
+class LetClause(Program):
+    def __init__(self, var_name, var_def, body):
+        self.var_name = var_name
+        self.var_def = var_def
+        self.body = body
+
+    def show(self, isFunction):
+        return "let %s = %s in %s" % (self.var_name,
+                                      self.var_def.show(False),
+                                      self.body.show(False))
+
+
+class MultiLetClause(Program):
+    def __init__(self, var_names, vars_def, body):
+        self.var_names = var_names
+        self.vars_def = vars_def
+        self.body = body
+
+    def show(self, isFunction):
+        return "let %s = %s in %s" % (", ".join(self.var_names),
+                                      self.vars_def.show(False),
+                                      self.body.show(False))
+
+
+class FreeVariable(Program):
+    def __init__(self, name) :
+        self.name = name
+
+    def show(self, isFunction):
+        if self.name is not None:
+            return "$" + self.name
+        else:
+            return "FREE_VAR"
+
+
+
+
+class Reversed(Program):
+    def __init__(self, body, input_vars):
+        self.body = body
+        self.input_vars = input_vars
+
+    def show(self, isFunction):
+        return "rev(%s, [%s])" % (self.body.show(False), ", ".join(v.show(False) for v in self.input_vars))
 
 
 class ShareVisitor(object):
@@ -1067,8 +1127,8 @@ class PrettyVisitor(object):
                                False, True)
             body = "(λ (%s) %s)"%(" ".join(reversed(newVariables)), body)
             return body
-            
-            
+
+
 
 def prettyProgram(e, Lisp=False):
     return e.visit(PrettyVisitor(Lisp=Lisp), [], False, False)
@@ -1086,11 +1146,11 @@ class EtaLongVisitor(object):
             return Abstraction(Application(e.shift(1),
                                            Index(0)))
         return None
-        
+
 
     def abstraction(self, e, request, environment):
         if not request.isArrow(): raise EtaExpandFailure()
-        
+
         return Abstraction(e.body.visit(self,
                                         request.arguments[1],
                                         [request.arguments[0]] + environment))
@@ -1122,9 +1182,9 @@ class EtaLongVisitor(object):
 
     # This procedure works by recapitulating the generative process
     # applications indices and primitives are all generated identically
-    
+
     def application(self, e, request, environment): return self._application(e, request, environment)
-    
+
     def index(self, e, request, environment): return self._application(e, request, environment)
 
     def primitive(self, e, request, environment): return self._application(e, request, environment)
@@ -1133,7 +1193,7 @@ class EtaLongVisitor(object):
 
     def execute(self, e):
         assert len(e.freeVariables()) == 0
-        
+
         if self.request is None:
             eprint("WARNING: request not specified for etaexpansion")
             self.request = e.infer()
@@ -1143,7 +1203,7 @@ class EtaLongVisitor(object):
         # assert el.infer().canonical() == e.infer().canonical(), \
         #     f"Types are not preserved by ETA expansion: {e} : {e.infer().canonical()} vs {el} : {el.infer().canonical()}"
         return el
-        
+
 
 
 class StripPrimitiveVisitor():
@@ -1177,7 +1237,7 @@ def strip_primitive_values(e):
     return e.visit(StripPrimitiveVisitor())
 def unstrip_primitive_values(e):
     return e.visit(ReplacePrimitiveValueVisitor())
-    
+
 
 # from luke
 class TokeniseVisitor(object):

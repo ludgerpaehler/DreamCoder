@@ -948,11 +948,52 @@ def parseSExpression(s):
                     n += 1
                     break
             return l, n
+        if s[n] == "[":
+            l = []
+            n += 1
+            while True:
+                x, n = p(n)
+                l.append(x)
+                while n <= len(s) and s[n].isspace():
+                    n += 1
+                if n == len(s):
+                    raise ParseFailure(s)
+                if s[n] == "]":
+                    n += 1
+                    break
+            return l, n
         name = []
-        while n < len(s) and not s[n].isspace() and s[n] not in "()":
+        while n < len(s) and not s[n].isspace() and s[n] not in "()[]":
             name.append(s[n])
             n += 1
         name = "".join(name)
+        if name == "let":
+            l = [name]
+            while True:
+                x, n = p(n)
+                if x.endswith(","):
+                    x = x[:-1]
+                l.append(x)
+                while n <= len(s) and s[n].isspace():
+                    n += 1
+                if n == len(s):
+                    raise ParseFailure(s)
+                if x == "=":
+                    break
+            x, n = p(n)
+            l.append(x)
+            x, n = p(n)
+            if x != "in":
+                raise ParseFailure(s)
+            l.append(x)
+            x, n = p(n)
+            l.append(x)
+            return l, n
+        if name == "rev":
+            l = [name]
+            x, n = p(n)
+            l.extend(x)
+            return l, n
         return name, n
 
     e, n = p(0)
