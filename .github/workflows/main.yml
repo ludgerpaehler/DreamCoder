@@ -96,9 +96,6 @@ jobs:
 
   test-julia:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        julia-version: ['1']
 
     steps:
       - name: Checkout code
@@ -107,11 +104,11 @@ jobs:
       - name: Setup Julia
         uses: julia-actions/setup-julia@latest
         with:
-          version: ${{ matrix.julia-version }}
+          version: '1'
 
       - uses: julia-actions/julia-buildpkg@latest
         with:
-          project: julia-enumerator
+          project: julia_enumerator
 
       - name: set cores number
         run: echo "JULIA_NUM_THREADS=$(getconf _NPROCESSORS_ONLN)" >> $GITHUB_ENV
@@ -119,7 +116,7 @@ jobs:
       - name: Run Julia package tests
         uses: julia-actions/julia-runtest@latest
         with:
-          project: julia-enumerator
+          project: julia_enumerator
 
 
   test-list:
