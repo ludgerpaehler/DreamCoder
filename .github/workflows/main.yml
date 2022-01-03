@@ -96,7 +96,8 @@ jobs:
 
   test-julia:
     runs-on: ubuntu-latest
-    matrix:
+    strategy:
+      matrix:
         julia-version: ['1']
 
     steps:
