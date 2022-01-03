@@ -96,6 +96,9 @@ jobs:
 
   test-julia:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        julia-version: ['1.6', '1.7']
 
     steps:
       - name: Checkout code
@@ -104,7 +107,7 @@ jobs:
       - name: Setup Julia
         uses: julia-actions/setup-julia@latest
         with:
-          version: '1'
+          version: ${{ matrix.julia-version }}
 
       - uses: julia-actions/julia-buildpkg@latest
         with:
