@@ -113,6 +113,12 @@ jobs:
       - name: set cores number
         run: echo "JULIA_NUM_THREADS=$(getconf _NPROCESSORS_ONLN)" >> $GITHUB_ENV
 
+      steps:
+      - uses: zhulik/redis-action@1.1.0
+        with:
+          redis version: '5'
+          number of databases: 1
+
       - name: Run Julia package tests
         uses: julia-actions/julia-runtest@latest
         with:
