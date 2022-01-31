@@ -1,3 +1,6 @@
+from typing import Dict
+
+
 class UnificationFailure(Exception):
     pass
 
@@ -117,6 +120,129 @@ class TypeConstructor(Type):
         if bindings is None:
             bindings = {}
         return TypeConstructor(self.name, [x.canonical(bindings) for x in self.arguments])
+
+
+class TypeNamedArgsConstructor(Type):
+    def __init__(self, name, arguments: Dict[str, Type], output: Type):
+        self.name = name
+        self.arguments = arguments
+        self.output = output
+        self.isPolymorphic = any(a.isPolymorphic for a in arguments.values()) or output.isPolymorphic
+
+    def makeDummyMonomorphic(self, mapping=None):
+        mapping = mapping if mapping is not None else {}
+        return TypeNamedArgsConstructor(
+            self.name,
+            {k: a.makeDummyMonomorphic(mapping) for (k, a) in self.arguments.items()},
+            self.output.makeDummyMonomorphic(mapping),
+        )
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, TypeNamedArgsConstructor)
+            and self.name == other.name
+            and all(x == other.arguments[k] for k, x in self.arguments.items())
+            and self.output == other.output
+        )
+
+    def __hash__(self):
+        return hash((self.name,) + tuple(self.arguments.items()) + (self.output,))
+
+    def __ne__(self, other):
+        return not (self == other)
+
+    def show(self, isReturn):
+        if self.name == ARROW:
+            args_str = f" {ARROW} ".join([f"{k}:{a.show(False)}" for (k, a) in self.arguments.items()])
+            if isReturn:
+                return f"{args_str} {ARROW} {self.output.show(True)}"
+            else:
+                return f"({args_str} {ARROW} {self.output.show(True)})"
+        elif self.arguments == {}:
+            return f"{self.name}({self.output.show(True)})"
+        else:
+            args_str = f", ".join([f"{k}:{a.show(True)}" for (k, a) in self.arguments.items()])
+            return f"{self.name}({args_str}, {self.output.show(True)})"
+
+    def json(self):
+        return {
+            "constructor": self.name,
+            "arguments": {k: a.json() for k, a in self.arguments.items()},
+            "output": self.output.json(),
+        }
+
+    def isArrow(self):
+        return self.name == ARROW
+
+    def functionArguments(self):
+        if self.name == ARROW:
+            xs = self.output.functionArguments()
+            return list(self.arguments.items()) + xs
+        return []
+
+    def returns(self):
+        if self.name == ARROW:
+            return self.output.returns()
+        else:
+            return self
+
+    def apply(self, context):
+        if not self.isPolymorphic:
+            return self
+        return TypeNamedArgsConstructor(
+            self.name, {k: x.apply(context) for k, x in self.arguments.items()}, self.output.apply(context)
+        )
+
+    def applyMutable(self, context):
+        if not self.isPolymorphic:
+            return self
+        return TypeNamedArgsConstructor(
+            self.name,
+            {k: x.applyMutable(context) for k, x in self.arguments.items()},
+            self.output.applyMutable(context),
+        )
+
+    def occurs(self, v):
+        if not self.isPolymorphic:
+            return False
+        return any(x.occurs(v) for x in self.arguments.values()) or self.output.occurs(v)
+
+    def negateVariables(self):
+        return TypeNamedArgsConstructor(
+            self.name, {k: a.negateVariables() for k, a in self.arguments.items()}, self.output.negateVariables()
+        )
+
+    def instantiate(self, context, bindings=None):
+        if not self.isPolymorphic:
+            return context, self
+        if bindings is None:
+            bindings = {}
+        new_arguments = {}
+        for k, x in self.arguments.items():
+            (context, new_x) = x.instantiate(context, bindings)
+            new_arguments[k] = new_x
+        (context, new_output) = self.output.instantiate(context, bindings)
+        return (context, TypeNamedArgsConstructor(self.name, new_arguments, new_output))
+
+    def instantiateMutable(self, context, bindings=None):
+        if not self.isPolymorphic:
+            return self
+        if bindings is None:
+            bindings = {}
+        return TypeNamedArgsConstructor(
+            self.name,
+            {k: x.instantiateMutable(context, bindings) for k, x in self.arguments.items()},
+            self.output.instantiateMutable(context, bindings),
+        )
+
+    def canonical(self, bindings=None):
+        if not self.isPolymorphic:
+            return self
+        if bindings is None:
+            bindings = {}
+        return TypeNamedArgsConstructor(
+            self.name, {k: x.canonical(bindings) for k, x in self.arguments.items()}, self.output.canonical(bindings)
+        )
 
 
 class TypeVariable(Type):

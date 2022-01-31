@@ -1,3 +1,4 @@
+from typing import Dict
 from collections import defaultdict
 
 from dreamcoder.frontier import *
@@ -29,12 +30,6 @@ class Grammar(object):
 
         self.expression2likelihood = dict((p, l) for l, _, p in productions)
         self.expression2likelihood[Index(0)] = self.logVariable
-        self.type_weights = {
-            "list": 1.0,
-            "int": 1.0,
-            "bool": 1.0,
-            "float": 1.0,
-        }
 
     def randomWeights(self, r):
         """returns a new grammar with random weights drawn from r. calls `r` w/ old weight"""
@@ -128,7 +123,6 @@ class Grammar(object):
         j = {
             "logVariable": self.logVariable,
             "productions": [{"expression": str(p), "logProbability": l} for l, _, p in self.productions],
-            "type_weights": self.type_weights,
         }
         if self.continuationType is not None:
             j["continuationType"] = self.continuationType.json()
@@ -1481,6 +1475,23 @@ class ContextualGrammar:
                     argumentIndex=argumentIndex + 1,
                 ):
                     yield resultL + argL, resultK, result
+
+
+class DataAwareGrammar:
+    def __init__(self, base_grammar, type_weights):
+        self.base_grammar = base_grammar
+        self.type_weights = type_weights
+
+    def json(self):
+        j = {
+            "base_grammar": self.base_grammar.json(),
+            "type_weights": self.type_weights,
+        }
+        return j
+
+    def logLikelihood(self, task: Task, expression: Program, complexities: Dict[str, Dict[str, int]]):
+        # input_ops, output_ops =
+        return self.base_grammar.logLikelihood(task.request, expression)
 
 
 def violatesSymmetry(f, x, argumentIndex):

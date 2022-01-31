@@ -449,11 +449,11 @@ def get_task_message(task, g, timeout, program_timeout, maximum_frontiers):
     import json
 
     m = {
-        "examples": [{"inputs": list(xs), "output": y} for xs, y in task.examples],
+        "examples": [{"inputs": xs, "output": y} for xs, y in task.examples],
         "name": task.name,
         "request": task.request.json(),
         "maximumFrontier": maximum_frontiers,
-        "test_examples": [{"inputs": list(xs), "output": y} for xs, y in task.test_examples]
+        "test_examples": [{"inputs": xs, "output": y} for xs, y in task.test_examples]
         if task.test_examples
         else [],
     }
@@ -501,7 +501,7 @@ def parse_result_message(response, tasks_by_name, task2grammar):
         p = Program.parse(e["program"])
         try:
             frontier_entries.append(
-            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=e["logPrior"])
+            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(task, p))
         )
         except:
             eprint(p)

@@ -35,7 +35,7 @@ class Task(object):
             return self.name + " (%s)" % self.supervision
 
     def __repr__(self):
-        return "Task(name={self.name}, request={self.request}, examples={self.examples}".format(self=self)
+        return "Task(name={self.name}, request={self.request}, examples={self.examples})".format(self=self)
 
     def __eq__(self, o):
         return self.name == o.name
@@ -226,6 +226,25 @@ class DifferentiableTask(Task):
                 return -penalty
         else:
             return -loss / self.temperature - penalty
+
+
+class NamedVarsTask(Task):
+    def __init__(self, task):
+        self.task = task
+        self.name = task.name
+        self.request = TypeNamedArgsConstructor(
+            task.request.name,
+            {f"$inp{i}": a for i, a in enumerate(task.request.arguments[:-1])},
+            task.request.arguments[-1],
+        )
+        self.examples = [({f"$inp{i}": v for i, v in enumerate(xs)}, y) for xs, y in task.examples]
+        self.features = task.features
+        self.cache = task.cache
+        self.test_examples = (
+            [({f"$inp{i}": v for i, v in enumerate(xs)}, y) for xs, y in task.test_examples]
+            if task.test_examples
+            else None
+        )
 
 
 def squaredErrorLoss(prediction, target):

@@ -158,7 +158,9 @@ def manage_enumerator_service(f):
             env.update(os.environ)
             eprint("Starting julia enumerator service")
             solver_process = subprocess.Popen(
-                ["julia"] + julia_args + [solver_file], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env
+                ["julia"] + julia_args + [solver_file],
+                stdin=subprocess.PIPE,
+                env=env,
             )
             try:
                 yield from f(*args, **kwargs)

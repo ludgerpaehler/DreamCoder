@@ -82,7 +82,7 @@ def curry(fn):
 class Curried:
     def __init__(self, f, arguments=None, arity=None):
         if arity is None:
-            arity = len(inspect.getargspec(f)[0])
+            arity = len(inspect.getfullargspec(f)[0])
         self.f = f
         self.arity = arity
         if arguments is None:
