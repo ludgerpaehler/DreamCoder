@@ -1,23 +1,20 @@
+import pytest
 from dreamcoder.domains.list.listPrimitives import bootstrapTarget_extra
-from dreamcoder.grammar import DataAwareGrammar, Grammar
+from dreamcoder.grammar import Grammar
 from dreamcoder.program import Program
 from dreamcoder.task import NamedVarsTask, Task
 from dreamcoder.type import tlist, tint, arrow
 
 
-def test_data_aware_grammar():
+@pytest.fixture(scope="module")
+def base_grammar():
     prims = bootstrapTarget_extra()
-    baseGrammar = Grammar.uniform(prims)
-    baseGrammar = DataAwareGrammar(
-        baseGrammar,
-        {
-            "list": 1.0,
-            "int": 1.0,
-            "bool": 1.0,
-            "float": 1.0,
-        },
-    )
-    task = NamedVarsTask(
+    return Grammar.uniform(prims)
+
+
+@pytest.fixture(scope="module")
+def base_task():
+    return NamedVarsTask(
         Task(
             name="drop-k with k=1",
             request=arrow(tlist(tint), tlist(tint)),
@@ -40,6 +37,9 @@ def test_data_aware_grammar():
             ],
         )
     )
+
+
+def sample_programs():
     programs = [
         (
             "(cdr $inp0)",
@@ -74,10 +74,11 @@ def test_data_aware_grammar():
                     "int": 43,
                 },
             },
-            -10.021270588192511,
+            # -10.021270588192511,
+            -9.104979856318357,
         ),
         (
-            "let $v1 = (eq? $inp0 $inp0) in let $v2, $v3 = rev((cons FREE_VAR FREE_VAR), [$inp0]) in (if $v1 $v3 empty)",
+            "let $v1 = (eq? $inp0 $inp0) in let $v2, $v3 = rev($inp0 = (cons $v2 $v3)) in (if $v1 $v3 empty)",
             {
                 "inp0": {
                     "list": 15,
@@ -98,10 +99,11 @@ def test_data_aware_grammar():
                     "int": 43,
                 },
             },
-            -8.006367567650248,
+            -9.104979856318357,
+            # -8.006367567650248,
         ),
         (
-            "let $v1, $v2 = rev((cons FREE_VAR FREE_VAR), [$inp0]) in $v2",
+            "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in $v2",
             {
                 "inp0": {
                     "list": 15,
@@ -119,12 +121,18 @@ def test_data_aware_grammar():
                     "int": 43,
                 },
             },
-            -0.6931471805599453,
+            -2.302585092994046,
+            # -0.6931471805599453,
         ),
     ]
-    for program, complexities, expected_likelihood in programs:
-        p = Program.parse(program)
-        print(p)
-        likelihood = baseGrammar.logLikelihood(task, p, complexities)
-        print(likelihood)
-        # assert likelihood == expected_likelihood
+    return programs
+
+
+@pytest.mark.parametrize("program, complexities, expected_likelihood", sample_programs())
+def test_program_likelihood(base_grammar, base_task, program, complexities, expected_likelihood):
+    p = Program.parse(program)
+    print(base_task.request)
+    print(p)
+    likelihood = base_grammar.logLikelihood(base_task.request, p)
+    print(likelihood)
+    assert likelihood == expected_likelihood

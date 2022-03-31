@@ -225,6 +225,7 @@ def ecIterator(
     rewriteTaskMetrics=True,
     auxiliaryLoss=False,
     custom_wake_generative=None,
+    type_weights=None,
 ):
     if enumerationTimeout is None:
         eprint("Please specify an enumeration timeout:", "explorationCompression(..., enumerationTimeout = ..., ...)")
@@ -398,7 +399,7 @@ def ecIterator(
         else:
             _enumerator = lambda *args, **kw: multicoreEnumeration(result.grammars[-1], *args, **kw)
         enumerator = lambda *args, **kw: _enumerator(
-            *args, maximumFrontier=maximumFrontier, CPUs=CPUs, evaluationTimeout=evaluationTimeout, solver=solver, **kw
+            *args, maximumFrontier=maximumFrontier, CPUs=CPUs, evaluationTimeout=evaluationTimeout, solver=solver, type_weights=type_weights, **kw
         )
         trainFrontiers, _, trainingTimes = enumerator(tasks, enumerationTimeout=enumerationTimeout)
         testFrontiers, _, testingTimes = enumerator(testingTasks, enumerationTimeout=testingTimeout, testing=True)
@@ -464,6 +465,7 @@ def ecIterator(
                 solver=solver,
                 enumerationTimeout=testingTimeout,
                 evaluationTimeout=evaluationTimeout,
+                type_weights=type_weights,
             )
         # If we have to also enumerate Helmholtz frontiers,
         # do this extra sneaky in the background
@@ -506,6 +508,7 @@ def ecIterator(
                 enumerationTimeout=enumerationTimeout,
                 CPUs=CPUs,
                 evaluationTimeout=evaluationTimeout,
+                type_weights=type_weights,
             )
             result.trainSearchTime = {t: tm for t, tm in times.items() if tm is not None}
         else:
@@ -637,6 +640,7 @@ def evaluateOnTestingTasks(
     maximumFrontier=None,
     enumerationTimeout=None,
     evaluationTimeout=None,
+    type_weights=None,
 ):
     if result.recognitionModel is not None:
         recognizer = result.recognitionModel
@@ -670,6 +674,7 @@ def evaluateOnTestingTasks(
             CPUs=CPUs,
             evaluationTimeout=evaluationTimeout,
             testing=True,
+            type_weights=type_weights,
         )
     updateTaskSummaryMetrics(result.recognitionTaskMetrics, times, "heldoutTestingTimes")
     updateTaskSummaryMetrics(
@@ -686,7 +691,7 @@ def evaluateOnTestingTasks(
 
 
 def default_wake_generative(
-    grammar, tasks, maximumFrontier=None, enumerationTimeout=None, CPUs=None, solver=None, evaluationTimeout=None
+    grammar, tasks, maximumFrontier=None, enumerationTimeout=None, CPUs=None, solver=None, evaluationTimeout=None, type_weights=None
 ):
     topDownFrontiers, times = multicoreEnumeration(
         grammar,
@@ -696,6 +701,7 @@ def default_wake_generative(
         CPUs=CPUs,
         solver=solver,
         evaluationTimeout=evaluationTimeout,
+        type_weights=type_weights,
     )
     eprint("Generative model enumeration results:")
     eprint(Frontier.describe(topDownFrontiers))

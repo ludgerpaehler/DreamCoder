@@ -271,19 +271,90 @@ class Grammar(object):
 
         return context, returnValue
 
-    def likelihoodSummary(self, context, environment, request, expression, silent=False):
+    def likelihoodSummary(self, context, environment, workspace, request, expression, silent=False):
+        if isinstance(request, TypeNamedArgsConstructor) and request.isArrow():
+            merged_workspace = dict(workspace, **request.arguments)
+            context, var_requests, summary = self.likelihoodSummary(
+                context,
+                environment,
+                merged_workspace,
+                request.output,
+                expression,
+                silent=silent,
+            )
+            for var_name, var_type in request.arguments.items():
+                try:
+                    context.unify(var_requests[var_name], var_type)
+                except UnificationFailure:
+                    if not silent:
+                        eprint(f"Expected {var_name} to be {var_requests[var_name]} but got {var_type}")
+                    assert False
+            return context, var_requests, summary
         if request.isArrow():
             if not isinstance(expression, Abstraction):
                 if not silent:
                     eprint("Request is an arrow but I got", expression)
-                return context, None
+                return context, {}, None
             return self.likelihoodSummary(
                 context,
                 [request.arguments[0]] + environment,
+                workspace,
                 request.arguments[1],
                 expression.body,
                 silent=silent,
             )
+
+        if expression.isLetClause:
+            context, var_requests, summary = self.likelihoodSummary(
+                context,
+                environment,
+                workspace,
+                request,
+                expression.body,
+                silent=silent,
+            )
+            context, var_def_requests, def_summary = self.likelihoodSummary(
+                context,
+                environment,
+                workspace,
+                var_requests[expression.var_name],
+                expression.var_def,
+                silent=silent,
+            )
+            var_requests.update(var_def_requests)
+            var_requests.pop(expression.var_name)
+            summary.join(def_summary)
+
+            return context, var_requests, summary
+
+        if expression.isMultiLetClause:
+            context, var_requests, summary = self.likelihoodSummary(
+                context,
+                environment,
+                workspace,
+                workspace[expression.inp_var_name],
+                expression.vars_def,
+                silent=silent,
+            )
+            merged_workspace = dict(workspace, **var_requests)
+            context, var_body_requests, body_summary = self.likelihoodSummary(
+                context,
+                environment,
+                merged_workspace,
+                request,
+                expression.body,
+                silent=silent,
+            )
+            summary.join(body_summary)
+            var_body_requests[expression.inp_var_name] = workspace[expression.inp_var_name]
+
+            return context, var_body_requests, summary
+
+        thisSummary = LikelihoodSummary()
+
+        if expression.isFreeVariable:
+            return context, {expression.name: request}, thisSummary
+
         # Build the candidates
         candidates = self.buildCandidates(request, context, environment, normalize=False, returnTable=True)
 
@@ -299,7 +370,7 @@ class Grammar(object):
             if self.continuationType is not None and f.isIndex:
                 ls = LikelihoodSummary()
                 ls.constant = NEGATIVEINFINITY
-                return ls
+                return context, {}, ls
 
             if not silent:
                 eprint("Expression is", expression)
@@ -310,9 +381,8 @@ class Grammar(object):
                 eprint("xs", xs)
                 eprint("environment", environment)
                 assert False
-            return context, None
+            return context, {}, None
 
-        thisSummary = LikelihoodSummary()
         thisSummary.record(f, possibles, constant=-math.log(numberOfVariables) if f.isIndex else 0)
 
         _, tp, context = candidates[f]
@@ -327,14 +397,19 @@ class Grammar(object):
             # This should absolutely never occur
             raise GrammarFailure((context, environment, request, expression))
 
+        var_requests = {}
+
         for argumentType, argument in zip(argumentTypes, xs):
             argumentType = argumentType.apply(context)
-            context, newSummary = self.likelihoodSummary(context, environment, argumentType, argument, silent=silent)
+            context, new_var_requests, newSummary = self.likelihoodSummary(
+                context, environment, workspace, argumentType, argument, silent=silent
+            )
             if newSummary is None:
-                return context, None
+                return context, {}, None
             thisSummary.join(newSummary)
+            var_requests.update(new_var_requests)
 
-        return context, thisSummary
+        return context, var_requests, thisSummary
 
     def bestFirstEnumeration(self, request):
         from heapq import heappush, heappop
@@ -426,7 +501,7 @@ class Grammar(object):
 
     def closedLikelihoodSummary(self, request, expression, silent=False):
         try:
-            context, summary = self.likelihoodSummary(Context.EMPTY, [], request, expression, silent=silent)
+            _, _, summary = self.likelihoodSummary(Context.EMPTY, [], {}, request, expression, silent=silent)
         except GrammarFailure as e:
             failureExport = "failures/grammarFailure%s.pickle" % (time.time() + getPID())
             eprint("PANIC: Grammar failure, exporting to ", failureExport)
@@ -752,12 +827,12 @@ class Grammar(object):
 
                     yield resultL + argL, resultK, result
 
-    def sketchLogLikelihood(self, request, full, sk, context=Context.EMPTY, environment=[]):
+    def sketchLogLikelihood(self, request, full, sk, context=Context.EMPTY, environment=[], workspace={}):
         """
         calculates mdl of full program 'full' from sketch 'sk'
         """
         if sk.isHole:
-            _, summary = self.likelihoodSummary(context, environment, request, full)
+            _, _, summary = self.likelihoodSummary(context, environment, workspace, request, full)
             if summary is None:
                 eprint(
                     "FATAL: program [ %s ] does not have a likelihood summary." % full,
@@ -779,6 +854,7 @@ class Grammar(object):
                 sk.body,
                 context=context,
                 environment=[v] + environment,
+                workspace=workspace,
             )
 
         else:
@@ -808,12 +884,15 @@ class Grammar(object):
 
             assert len(argumentRequests) == len(sk_xs) == len(full_xs)  # this might not be true if holes??
 
-            return self.sketchllApplication(context, environment, sk_f, sk_xs, full_f, full_xs, argumentRequests)
+            return self.sketchllApplication(
+                context, environment, workspace, sk_f, sk_xs, full_f, full_xs, argumentRequests
+            )
 
     def sketchllApplication(
         self,
         context,
         environment,
+        workspace,
         sk_function,
         sk_arguments,
         full_function,
@@ -837,6 +916,7 @@ class Grammar(object):
                 sk_firstSketch,
                 context=context,
                 environment=environment,
+                workspace=workspace,
             )
 
             # finish this...
@@ -846,6 +926,7 @@ class Grammar(object):
             resultL, context = self.sketchllApplication(
                 newContext,
                 environment,
+                workspace,
                 sk_newFunction,
                 sk_laterSketches,
                 full_newFunction,
@@ -1475,23 +1556,6 @@ class ContextualGrammar:
                     argumentIndex=argumentIndex + 1,
                 ):
                     yield resultL + argL, resultK, result
-
-
-class DataAwareGrammar:
-    def __init__(self, base_grammar, type_weights):
-        self.base_grammar = base_grammar
-        self.type_weights = type_weights
-
-    def json(self):
-        j = {
-            "base_grammar": self.base_grammar.json(),
-            "type_weights": self.type_weights,
-        }
-        return j
-
-    def logLikelihood(self, task: Task, expression: Program, complexities: Dict[str, Dict[str, int]]):
-        # input_ops, output_ops =
-        return self.base_grammar.logLikelihood(task.request, expression)
 
 
 def violatesSymmetry(f, x, argumentIndex):

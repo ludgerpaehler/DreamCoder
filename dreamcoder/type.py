@@ -415,6 +415,14 @@ class MutableContext(object):
             self.unify(x, y)
 
 
+class TypeWeights(object):
+    def __init__(self, weights):
+        self.weights = weights
+
+    def json(self):
+        return self.weights
+
+
 Context.EMPTY = Context(0, [])
 
 

@@ -234,14 +234,14 @@ class NamedVarsTask(Task):
         self.name = task.name
         self.request = TypeNamedArgsConstructor(
             task.request.name,
-            {f"$inp{i}": a for i, a in enumerate(task.request.arguments[:-1])},
+            {f"inp{i}": a for i, a in enumerate(task.request.arguments[:-1])},
             task.request.arguments[-1],
         )
-        self.examples = [({f"$inp{i}": v for i, v in enumerate(xs)}, y) for xs, y in task.examples]
+        self.examples = [({f"inp{i}": v for i, v in enumerate(xs)}, y) for xs, y in task.examples]
         self.features = task.features
         self.cache = task.cache
         self.test_examples = (
-            [({f"$inp{i}": v for i, v in enumerate(xs)}, y) for xs, y in task.test_examples]
+            [({f"inp{i}": v for i, v in enumerate(xs)}, y) for xs, y in task.test_examples]
             if task.test_examples
             else None
         )

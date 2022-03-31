@@ -19,13 +19,14 @@ def multicoreEnumeration(
     verbose=True,
     evaluationTimeout=None,
     testing=False,
+    type_weights=None,
 ):
     """g: Either a Grammar, or a map from task to grammar.
     Returns (list-of-frontiers, map-from-task-to-search-time)"""
 
     if solver == "julia":
         return multicore_enumeration_with_data(
-            g, tasks, enumerationTimeout, evaluationTimeout, solver, CPUs, maximumFrontier, verbose, testing
+            g, type_weights, tasks, enumerationTimeout, evaluationTimeout, solver, CPUs, maximumFrontier, verbose, testing
         )
 
     # We don't use actual threads but instead use the multiprocessing
@@ -246,6 +247,7 @@ class WorkerError(Exception):
 
 def multicore_enumeration_with_data(
     g,
+    type_weights,
     tasks,
     enumerationTimeout=None,
     evaluationTimeout=None,
@@ -290,7 +292,7 @@ def multicore_enumeration_with_data(
 
     r = redis.Redis(host="localhost", port=6379, db=0)
     for task in tasks:
-        m = get_task_message(task, task2grammar[task], enumerationTimeout, evaluationTimeout, maximumFrontier)
+        m = get_task_message(task, task2grammar[task], enumerationTimeout, evaluationTimeout, maximumFrontier, type_weights)
         r.rpush("tasks", m)
 
     for _ in range(len(tasks)):
@@ -445,7 +447,7 @@ def solveForTask_ocaml(
     return frontiers, searchTimes, pc
 
 
-def get_task_message(task, g, timeout, program_timeout, maximum_frontiers):
+def get_task_message(task, g, timeout, program_timeout, maximum_frontiers, type_weights):
     import json
 
     m = {
@@ -464,6 +466,7 @@ def get_task_message(task, g, timeout, program_timeout, maximum_frontiers):
 
     message = {
         "DSL": g.json(),
+        "type_weights": type_weights.json(),
         "task": m,
         "name": task.name,
         "programTimeout": program_timeout,
@@ -501,7 +504,7 @@ def parse_result_message(response, tasks_by_name, task2grammar):
         p = Program.parse(e["program"])
         try:
             frontier_entries.append(
-            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(task, p))
+            FrontierEntry(program=p, logLikelihood=e["logLikelihood"], logPrior=g.logLikelihood(task.request, p))
         )
         except:
             eprint(p)

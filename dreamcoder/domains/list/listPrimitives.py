@@ -279,7 +279,7 @@ def primitives():
         Primitive("*", arrow(tint, tint, tint), _multiplication),
         Primitive("negate", arrow(tint, tint), _negate),
         Primitive("mod", arrow(tint, tint, tint), _mod),
-        Primitive("eq?", arrow(tint, tint, tbool), _eq),
+        Primitive("eq?", arrow(t0, t0, tbool), _eq),
         Primitive("gt?", arrow(tint, tint, tbool), _gt),
         Primitive("is-prime", arrow(tint, tbool), _isPrime),
         Primitive("is-square", arrow(tint, tbool), _isSquare),
@@ -319,7 +319,7 @@ def basePrimitives():
         Primitive("cdr", arrow(tlist(t0), tlist(t0)), _cdr),
         Primitive("empty?", arrow(tlist(t0), tbool), _isEmpty),
         Primitive("if", arrow(tbool, t0, t0, t0), _if),
-        Primitive("eq?", arrow(tint, tint, tbool), _eq),
+        Primitive("eq?", arrow(t0, t0, tbool), _eq),
         Primitive("+", arrow(tint, tint, tint), _addition),
         Primitive("-", arrow(tint, tint, tint), _subtraction)
     ]
@@ -355,7 +355,7 @@ def bootstrapTarget_extra():
         Primitive("*", arrow(tint, tint, tint), _multiplication),
         Primitive("mod", arrow(tint, tint, tint), _mod),
         Primitive("gt?", arrow(tint, tint, tbool), _gt),
-        Primitive("eq?", arrow(tint, tint, tbool), _eq),
+        Primitive("eq?", arrow(t0, t0, tbool), _eq),
         Primitive("is-prime", arrow(tint, tbool), _isPrime),
         Primitive("is-square", arrow(tint, tbool), _isSquare),
     ]
@@ -366,7 +366,7 @@ def no_length():
         Primitive("*", arrow(tint, tint, tint), _multiplication),
         Primitive("mod", arrow(tint, tint, tint), _mod),
         Primitive("gt?", arrow(tint, tint, tbool), _gt),
-        Primitive("eq?", arrow(tint, tint, tbool), _eq),
+        Primitive("eq?", arrow(t0, t0, tbool), _eq),
         Primitive("is-prime", arrow(tint, tbool), _isPrime),
         Primitive("is-square", arrow(tint, tbool), _isSquare),
     ]
@@ -390,7 +390,7 @@ def McCarthyPrimitives():
         #primitiveRecursion2,
         Primitive("gt?", arrow(tint, tint, tbool), _gt),
         Primitive("if", arrow(tbool, t0, t0, t0), _if),
-        Primitive("eq?", arrow(tint, tint, tbool), _eq),
+        Primitive("eq?", arrow(t0, t0, tbool), _eq),
         Primitive("+", arrow(tint, tint, tint), _addition),
         Primitive("-", arrow(tint, tint, tint), _subtraction),
     ] + [Primitive(str(j), tint, j) for j in range(2)]

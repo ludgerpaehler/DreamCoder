@@ -137,6 +137,15 @@ class Program(object):
     @property
     def isHole(self): return False
 
+    @property
+    def isFreeVariable(self): return False
+
+    @property
+    def isLetClause(self): return False
+
+    @property
+    def isMultiLetClause(self): return False
+
     @staticmethod
     def parse(s):
         s = parseSExpression(s)
@@ -149,14 +158,11 @@ class Program(object):
                 if e[0] == 'lambda':
                     assert len(e) == 2
                     return Abstraction(p(e[1]))
-                if e[0] == 'let':
-                    if len(e) == 6:
-                        return LetClause(e[1], p(e[3]), p(e[5]))
-                    elif len(e) > 6:
-                        return MultiLetClause(e[1:-4], p(e[-3]), p(e[-1]))
-                if e[0] == 'rev':
-                    assert len(e) == 4
-                    return Reversed(p(e[1]), [p(v) for v in e[3]])
+                if e[0] == 'let' :
+                    if e[-3][0] != 'rev':
+                        return LetClause(e[1][1:], p(e[3]), p(e[5]))
+                    else:
+                        return MultiLetClause([v[1:] for v in e[1:-4]], e[-3][1][1:], p(e[-3][3]), p(e[-1]))
                 f = p(e[0])
                 for x in e[1:]:
                     f = Application(f,p(x))
@@ -863,21 +869,31 @@ class LetClause(Program):
         self.body = body
 
     def show(self, isFunction):
-        return "let %s = %s in %s" % (self.var_name,
+        return "let $%s = %s in %s" % (self.var_name,
                                       self.var_def.show(False),
                                       self.body.show(False))
 
+    @property
+    def isLetClause(self):
+        return True
+
 
 class MultiLetClause(Program):
-    def __init__(self, var_names, vars_def, body):
+    def __init__(self, var_names, inp_var_name, vars_def, body):
         self.var_names = var_names
+        self.inp_var_name = inp_var_name
         self.vars_def = vars_def
         self.body = body
 
     def show(self, isFunction):
-        return "let %s = %s in %s" % (", ".join(self.var_names),
+        return "let %s = rev($%s = %s) in %s" % (", ".join(f"${v}" for v in self.var_names),
+                                      self.inp_var_name,
                                       self.vars_def.show(False),
                                       self.body.show(False))
+
+    @property
+    def isMultiLetClause(self):
+        return True
 
 
 class FreeVariable(Program):
@@ -890,16 +906,9 @@ class FreeVariable(Program):
         else:
             return "FREE_VAR"
 
-
-
-
-class Reversed(Program):
-    def __init__(self, body, input_vars):
-        self.body = body
-        self.input_vars = input_vars
-
-    def show(self, isFunction):
-        return "rev(%s, [%s])" % (self.body.show(False), ", ".join(v.show(False) for v in self.input_vars))
+    @property
+    def isFreeVariable(self):
+        return True
 
 
 class ShareVisitor(object):

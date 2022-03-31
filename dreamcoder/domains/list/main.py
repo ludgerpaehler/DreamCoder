@@ -7,9 +7,9 @@ import datetime
 
 from dreamcoder.dreamcoder import explorationCompression
 from dreamcoder.utilities import eprint, flatten, testTrainSplit
-from dreamcoder.grammar import DataAwareGrammar, Grammar
+from dreamcoder.grammar import Grammar
 from dreamcoder.task import NamedVarsTask, Task
-from dreamcoder.type import Context, arrow, tbool, tlist, tint, t0, UnificationFailure
+from dreamcoder.type import Context, TypeWeights, arrow, tbool, tlist, tint, t0, UnificationFailure
 from dreamcoder.domains.list.listPrimitives import (
     basePrimitives,
     primitives,
@@ -414,14 +414,13 @@ def main(args):
 
     if args["solver"] == "julia":
         tasks = [NamedVarsTask(t) for t in tasks]
-        baseGrammar = DataAwareGrammar(
-            baseGrammar,
+        args["type_weights"] = TypeWeights(
             {
                 "list": 1.0,
                 "int": 1.0,
                 "bool": 1.0,
                 "float": 1.0,
-            },
+            }
         )
 
     extractor = {
