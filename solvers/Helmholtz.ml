@@ -6,10 +6,6 @@ open Program
 open Grammar
 open Type
 
-open Yojson.Basic
-
-
-
 
 let run_job channel =
   let open Yojson.Basic.Util in
@@ -62,6 +58,3 @@ let output_job ?maxExamples:(maxExamples=50000) result =
                 "programs", `List(ps |> List.map ~f:(fun p -> `String(p |> string_of_program)))])))
   in
   message
-
-let _ : unit =
-  run_job Stdlib.stdin |> remove_bad_dreams |> output_job |> to_channel Stdlib.stdout

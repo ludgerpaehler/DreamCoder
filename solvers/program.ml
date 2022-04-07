@@ -9,16 +9,16 @@ type program =
   | Apply of program * program
   | Primitive of tp * string * unit ref
   | Invented of tp * program
+  | LetClause of string * program * program
+  | LetRevClause of string list * string * program * program
+  | FreeVar of string
+  | Const of string
 [@@deriving equal]
 
 let is_index = function Index _ -> true | _ -> false
-
 let get_index_value = function Index n -> n | _ -> assert false
-
 let is_primitive = function Primitive (_, _, _) -> true | Invented (_, _) -> true | _ -> false
-
 let is_base_primitive = function Primitive (_, _, _) -> true | _ -> false
-
 let is_abstraction = function Abstraction _ -> true | _ -> false
 
 let rec recursively_get_abstraction_body = function
@@ -26,7 +26,6 @@ let rec recursively_get_abstraction_body = function
   | e -> e
 
 let program_children = function Abstraction b -> [ b ] | Apply (m, n) -> [ m; n ] | _ -> []
-
 let rec application_function = function Apply (f, _) -> application_function f | e -> e
 
 let rec application_parse = function
@@ -49,9 +48,16 @@ let rec show_program (is_function : bool) = function
   | Apply (p, q) ->
       if is_function then show_program true p ^ " " ^ show_program false q
       else "(" ^ show_program true p ^ " " ^ show_program false q ^ ")"
-  | Primitive (t, "FREE_VAR", _) -> "FREE_VAR(" ^ string_of_type t ^ ")"
   | Primitive (_, n, _) -> n
   | Invented (_, i) -> "#" ^ show_program false i
+  | LetClause (var, def, body) ->
+      "let $" ^ var ^ " = " ^ show_program false def ^ " in " ^ show_program false body
+  | LetRevClause (vars, inp, def, body) ->
+      "let "
+      ^ String.concat ~sep:", " (List.map vars ~f:(fun var -> "$" ^ var))
+      ^ " = rev($" ^ inp ^ " = " ^ show_program false def ^ ") in " ^ show_program false body
+  | FreeVar n -> "$" ^ n
+  | Const n -> "Const("^n^")"
 
 let string_of_program = show_program false
 
@@ -84,6 +90,21 @@ let rec compare_program p1 p2 =
   | Primitive (_, _, _), _ -> -1
   | Invented (_, b1), Invented (_, b2) -> compare_program b1 b2
   | Invented (_, _), _ -> -1
+  | LetClause (_, b1, e1), LetClause (_, b2, e2) ->
+      let c = compare_program b1 b2 in
+      if c = 0 then compare_program e1 e2 else c
+  | LetClause (_, _, _), _ -> -1
+  | LetRevClause (_, inp1, def1, body1), LetRevClause (_, inp2, def2, body2) ->
+      let c = compare_program def1 def2 in
+      if c = 0 then
+        let c1 = compare_program body1 body2 in
+        if c1 = 0 then String.compare inp1 inp2 else c1
+      else c
+  | LetRevClause (_, _, _, _), _ -> -1
+  | FreeVar n1, FreeVar n2 -> String.compare n1 n2
+  | FreeVar _, _ -> -1
+  | Const n1, Const n2 -> String.compare n1 n2
+  | Const _, _ -> -1
 
 exception UnboundVariable
 
@@ -107,7 +128,6 @@ let rec infer_program_type context environment p : tContext * tp =
       applyContext context rt
 
 let closed_inference = snd % infer_program_type empty_context []
-
 let make_invention i = Invented (closed_inference i |> canonical_type, i)
 
 exception UnknownPrimitive of string
@@ -265,6 +285,10 @@ let rec strip_primitives = function
   | Apply (f, x) -> Apply (strip_primitives f, strip_primitives x)
   | Abstraction b -> Abstraction (strip_primitives b)
   | Primitive (t, n, _) -> Primitive (t, n, unit_reference)
+  | LetClause (n, d, b) -> LetClause (n, strip_primitives d, strip_primitives b)
+  | LetRevClause (ns, ins, d, b) -> LetRevClause (ns, ins, strip_primitives d, strip_primitives b)
+  | FreeVar n -> FreeVar n
+  | Const n -> Const n
 
 (* PRIMITIVES *)
 let[@warning "-20"] primitive ?(manualLaziness = false) (name : string) (t : tp) x =
@@ -358,47 +382,26 @@ let primitive_constant_strings =
  * let primitive_character_to_string = primitive "chr2str" (tcharacter @> tstring) (String.of_char);; *)
 
 let primitive0 = primitive "0" tint 0
-
 let primitive1 = primitive "1" tint 1
-
 let primitiven1 = primitive "-1" tint (0 - 1)
-
 let primitive2 = primitive "2" tint 2
-
 let primitive3 = primitive "3" tint 3
-
 let primitive4 = primitive "4" tint 4
-
 let primitive5 = primitive "5" tint 5
-
 let primitive6 = primitive "6" tint 6
-
 let primitive7 = primitive "7" tint 7
-
 let primitive8 = primitive "8" tint 8
-
 let primitive9 = primitive "9" tint 9
-
 let primitive20 = primitive "ifty" tint 20
-
 let primitive_addition = primitive "+" (tint @> tint @> tint) (fun x y -> x + y)
-
 let primitive_increment = primitive "incr" (tint @> tint) (fun x -> 1 + x)
-
 let primitive_decrement = primitive "decr" (tint @> tint) (fun x -> x - 1)
-
 let primitive_subtraction = primitive "-" (tint @> tint @> tint) ( - )
-
 let primitive_negation = primitive "negate" (tint @> tint) (fun x -> 0 - x)
-
 let primitive_multiplication = primitive "*" (tint @> tint @> tint) ( * )
-
 let primitive_modulus = primitive "mod" (tint @> tint @> tint) (fun x y -> x mod y)
-
 let primitive_apply = primitive "apply" (t1 @> (t1 @> t0) @> t0) (fun x f -> f x)
-
 let primitive_true = primitive "true" tboolean true
-
 let primitive_false = primitive "false" tboolean false
 
 let primitive_if =
@@ -467,9 +470,7 @@ let primitive_is_prime =
         x)
 
 let primitive_cons = primitive "cons" (t0 @> tlist t0 @> tlist t0) (fun x xs -> x :: xs)
-
 let primitive_car = primitive "car" (tlist t0 @> t0) (fun xs -> List.hd_exn xs)
-
 let primitive_cdr = primitive "cdr" (tlist t0 @> tlist t0) (fun xs -> List.tl_exn xs)
 
 let primitive_is_empty =
@@ -527,22 +528,16 @@ let rec number_of_free_parameters = function
   | Index _ -> 0
 
 let primitive_empty = primitive "empty" (tlist t0) []
-
 let primitive_range = primitive "range" (tint @> tlist tint) (fun x -> 0 -- (x - 1))
 
 let primitive_sort =
   primitive "sort" (tlist tint @> tlist tint) (List.sort ~compare:(fun x y -> x - y))
 
 let primitive_reverse = primitive "reverse" (tlist tint @> tlist tint) List.rev
-
 let primitive_append = primitive "append" (tlist t0 @> tlist t0 @> tlist t0) ( @ )
-
 let primitive_singleton = primitive "singleton" (tint @> tlist tint) (fun x -> [ x ])
-
 let primitive_slice = primitive "slice" (tint @> tint @> tlist tint @> tlist tint) slice
-
 let primitive_length = primitive "length" (tlist t0 @> tint) List.length
-
 let primitive_map = primitive "map" ((t0 @> t1) @> tlist t0 @> tlist t1) (fun f l -> List.map ~f l)
 
 let primitive_fold_right =
@@ -569,15 +564,10 @@ let primitive_filter_int =
     (fun f l -> List.filter ~f l)
 
 let primitive_equal = primitive "eq?" (tint @> tint @> tboolean) (fun (a : int) (b : int) -> a = b)
-
 let primitive_equal0 = primitive "eq0" (tint @> tboolean) (fun (a : int) -> a = 0)
-
 let primitive_not = primitive "not" (tboolean @> tboolean) not
-
 let primitive_and = primitive "and" (tboolean @> tboolean @> tboolean) (fun x y -> x && y)
-
 let primitive_nand = primitive "nand" (tboolean @> tboolean @> tboolean) (fun x y -> not (x && y))
-
 let primitive_or = primitive "or" (tboolean @> tboolean @> tboolean) (fun x y -> x || y)
 
 let primitive_greater_than =
@@ -619,19 +609,12 @@ let primitive_run =
   primitive "run" (tprogram @> tcanvas) (fun x -> GeomLib.Plumbing.relist (GeomLib.Plumbing.run x))
 
 let primitive_just = primitive "just" (t0 @> tmaybe t0) (fun x -> Some x)
-
 let primitive_nothing = primitive "nothing" (tmaybe t0) None
-
 let primitive_nop = primitive "nop" tprogram GeomLib.Plumbing.nop
-
 let primitive_nop2 = primitive "nop2" tprogram GeomLib.Plumbing.nop
-
 let primitive_embed = primitive "embed" (tprogram @> tprogram) GeomLib.Plumbing.embed
-
 let primitive_concat = primitive "concat" (tprogram @> tprogram @> tprogram) GeomLib.Plumbing.concat
-
 let primitive_turn = primitive "turn" (tmaybe tvar @> tprogram) GeomLib.Plumbing.turn
-
 let primitive_define = primitive "define" (tvar @> tprogram) GeomLib.Plumbing.define
 
 let primitive_repeat =
@@ -646,30 +629,19 @@ let primitive_integrate =
     GeomLib.Plumbing.integrate
 
 let var_unit = primitive "var_unit" tvar GeomLib.Plumbing.var_unit
-
 let var_two = primitive "var_two" tvar GeomLib.Plumbing.var_two
-
 let var_three = primitive "var_three" tvar GeomLib.Plumbing.var_three
-
 let var_double = primitive "var_double" (tvar @> tvar) GeomLib.Plumbing.var_double
-
 let var_half = primitive "var_half" (tvar @> tvar) GeomLib.Plumbing.var_half
-
 let var_next = primitive "var_next" (tvar @> tvar) GeomLib.Plumbing.var_next
-
 let var_prev = primitive "var_prev" (tvar @> tvar) GeomLib.Plumbing.var_prev
-
 let var_opposite = primitive "var_opposite" (tvar @> tvar) GeomLib.Plumbing.var_opposite
-
 let var_divide = primitive "var_divide" (tvar @> tvar @> tvar) GeomLib.Plumbing.var_divide
-
 let var_name = primitive "var_name" tvar GeomLib.Plumbing.var_name
 
 (* LOGO *)
 let logo_RT = primitive "logo_RT" (tangle @> turtle) LogoLib.LogoInterpreter.logo_RT
-
 let logo_FW = primitive "logo_FW" (tlength @> turtle) LogoLib.LogoInterpreter.logo_FW
-
 let logo_SEQ = primitive "logo_SEQ" (turtle @> turtle @> turtle) LogoLib.LogoInterpreter.logo_SEQ
 
 let logo_FWRT =
@@ -734,17 +706,11 @@ let logo_GETSET =
 (*                             ) *)
 
 let logo_UA = primitive "logo_UA" tangle 1.
-
 let logo_UL = primitive "logo_UL" tlength 1.
-
 let logo_ZA = primitive "logo_ZA" tangle 0.
-
 let logo_ZL = primitive "logo_ZL" tlength 0.
-
 let logo_IFTY = primitive "logo_IFTY" tint 20
-
 let logo_epsL = primitive "logo_epsL" tlength 0.05
-
 let logo_epsA = primitive "logo_epsA" tangle 0.025
 
 let line =
@@ -756,19 +722,12 @@ let line =
         z)
 
 let logo_DIVA = primitive "logo_DIVA" (tangle @> tint @> tangle) (fun a b -> a /. float_of_int b)
-
 let logo_MULA = primitive "logo_MULA" (tangle @> tint @> tangle) (fun a b -> a *. float_of_int b)
-
 let logo_DIVL = primitive "logo_DIVL" (tlength @> tint @> tlength) (fun a b -> a /. float_of_int b)
-
 let logo_MULL = primitive "logo_MULL" (tlength @> tint @> tlength) (fun a b -> a *. float_of_int b)
-
 let logo_ADDA = primitive "logo_ADDA" (tangle @> tangle @> tangle) ( +. )
-
 let logo_SUBA = primitive "logo_SUBA" (tangle @> tangle @> tangle) ( -. )
-
 let logo_ADDL = primitive "logo_ADDL" (tlength @> tlength @> tlength) ( +. )
-
 let logo_SUBL = primitive "logo_SUBL" (tlength @> tlength @> tlength) ( -. )
 
 let (_ : program) =
@@ -808,7 +767,6 @@ let primitive_fold =
     (fun l x0 f -> List.fold_right ~f ~init:x0 l)
 
 let default_recursion_limit = ref 50
-
 let set_recursion_limit l = default_recursion_limit := l
 
 exception RecursionDepthExceeded of int
@@ -886,6 +844,15 @@ let program_parser : program parsing =
     constant_parser "$" %% fun _ ->
     number %% fun n -> Index (Int.of_string n) |> return_parse
   in
+  let var_name =
+    constant_parser "$" %% fun _ ->
+    token_parser Char.is_alphanum %% fun n ->
+    try
+      let (_ : int) = Int.of_string n in
+      parse_failure
+    with _ -> n |> return_parse
+  in
+  let free_variable : program parsing = var_name %% fun n -> FreeVar n |> return_parse in
 
   let fixed_real : program parsing =
     constant_parser "real" %% fun _ ->
@@ -895,7 +862,8 @@ let program_parser : program parsing =
   in
 
   let rec program_parser () : program parsing =
-    application () <|> primitive <|> variable <|> invented () <|> abstraction () <|> fixed_real
+    application () <|> primitive <|> variable <|> free_variable <|> invented () <|> abstraction ()
+    <|> fixed_real <|> let_clause () <|> let_rev_clause () <|> const_clause
   and invented () =
     constant_parser "#" %% fun _ ->
     program_parser () %% fun p ->
@@ -928,55 +896,92 @@ let program_parser : program parsing =
     constant_parser "(" %% fun _ ->
     application_sequence None %% fun a ->
     constant_parser ")" %% fun _ -> return_parse a
+  and var_name_list () : string list parsing =
+    var_name %% fun v ->
+    ( constant_parser "," %% fun _ ->
+      whitespace %% fun _ ->
+      var_name_list () %% fun vs -> return_parse (v :: vs) )
+    <|> whitespace %% fun _ ->
+        constant_parser "=" %% fun _ -> return_parse [ v ]
+  and let_clause () : program parsing =
+    constant_parser "let" %% fun _ ->
+    whitespace %% fun _ ->
+    var_name %% fun v ->
+    whitespace %% fun _ ->
+    constant_parser "=" %% fun _ ->
+    whitespace %% fun _ ->
+    program_parser () %% fun d ->
+    whitespace %% fun _ ->
+    constant_parser "in" %% fun _ ->
+    whitespace %% fun _ ->
+    program_parser () %% fun b -> return_parse (LetClause (v, d, b))
+  and let_rev_clause () : program parsing =
+    constant_parser "let" %% fun _ ->
+    whitespace %% fun _ ->
+    var_name_list () %% fun vs ->
+    whitespace %% fun _ ->
+    constant_parser "rev(" %% fun _ ->
+    var_name %% fun inp ->
+    whitespace %% fun _ ->
+    constant_parser "=" %% fun _ ->
+    whitespace %% fun _ ->
+    program_parser () %% fun d ->
+    constant_parser ")" %% fun _ ->
+    whitespace %% fun _ ->
+    constant_parser "in" %% fun _ ->
+    whitespace %% fun _ ->
+    program_parser () %% fun b -> return_parse (LetRevClause (vs, inp, d, b))
+  and const_clause =
+    constant_parser "Const(" %% fun _ ->
+    token_parser Char.is_alphanum %% fun n ->
+    constant_parser ")" %% fun _ -> return_parse (Const (n))
   in
 
   program_parser ()
 
 let parse_program s = run_parser program_parser s
 
-(* let test_program_inference program desired_type =
- *   let (context,t) = infer_program_type empty_context [] program in
- *   let t = applyContext context t in
- *   let t = canonical_type t in
- *   Printf.printf "%s : %s\n" (string_of_program program) (string_of_type t);
- *   assert (t = (canonical_type desired_type))
- *
- * let program_test_cases() =
- *   test_program_inference (Abstraction(Index(0))) (t0 @> t0);
- *   test_program_inference (Abstraction(Abstraction(Apply(Index(0),Index(1))))) (t0 @> (t0 @> t1) @> t1);
- *   test_program_inference (Abstraction(Abstraction(Index(1)))) (t0 @> t1 @> t0);
- *   test_program_inference (Abstraction(Abstraction(Index(0)))) (t0 @> t1 @> t1);
- *   let v : int = evaluate [] (Apply(primitive_increment, primitive0)) in
- *   Printf.printf "%d\n" v;
- *
- * ;; *)
+let test_program_inference program desired_type =
+  let context, t = infer_program_type empty_context [] program in
+  let _, t = applyContext context t in
+  let t = canonical_type t in
+  (* Printf.printf "%s : %s\n" (string_of_program program) (string_of_type t); *)
+  tp_eq t (canonical_type desired_type)
+
+let%test _ = test_program_inference (Abstraction (Index 0)) (t0 @> t0)
+
+let%test _ =
+  test_program_inference
+    (Abstraction (Abstraction (Apply (Index 0, Index 1))))
+    (t0 @> (t0 @> t1) @> t1)
+
+let%test _ = test_program_inference (Abstraction (Abstraction (Index 1))) (t0 @> t1 @> t0)
+let%test _ = test_program_inference (Abstraction (Abstraction (Index 0))) (t0 @> t1 @> t1)
+let%test _ = evaluate [] (Apply (primitive_increment, primitive0)) = 1
 
 let parsing_test_case s =
-  Printf.printf "Parsing the string %s\n" s;
-  program_parser (s, 0)
-  |> List.iter ~f:(fun (p, n) ->
-         if n = String.length s then (
-           Printf.printf "Parsed into the program: %s\n" (string_of_program p);
-           assert (String.( = ) s (string_of_program p));
-           flush_everything ())
-         else (
-           Printf.printf "With the suffix %n, we get the program %s\n" n (string_of_program p);
-           flush_everything ()));
-  Printf.printf "\n"
+  let po = parse_program s in
+  match po with None -> false | Some p -> String.( = ) s (string_of_program p)
 
-let parsing_test_cases () =
-  parsing_test_case "(+ 1)";
-  parsing_test_case "($0 $1)";
-  parsing_test_case "(+ 1 $0 $2)";
-  parsing_test_case "(map (+ 1) $0 $1)";
-  parsing_test_case "(map (+ 1) ($0 (+ 1) (- 1) (+ -)) $1)";
-  parsing_test_case "(lambda $0)";
-  parsing_test_case "(lambda (+ 1 #(* 8 1)))";
-  parsing_test_case "(lambda (+ 1 #(* 8 map)))"
+let%test _ = parsing_test_case "(+ 1)"
+let%test _ = parsing_test_case "($0 $1)"
+let%test _ = parsing_test_case "(+ 1 $0 $2)"
+let%test _ = parsing_test_case "(map (+ 1) $0 $1)"
+let%test _ = parsing_test_case "(map (+ 1) ($0 (+ 1) (- 1) (+ -)) $1)"
+let%test _ = parsing_test_case "(lambda $0)"
+let%test _ = parsing_test_case "(lambda (+ 1 #(* 8 1)))"
+let%test _ = parsing_test_case "(lambda (+ 1 #(* 8 map)))"
+let%test _ = parsing_test_case "let $v1 = 1 in $v1"
 
-(* parsing_test_cases();; *)
+let%test _ =
+  parsing_test_case
+    "(lambda let $v1 = (cdr $0) in let $v2 = (eq? $0 $v1) in let $v3 = (eq? $0 $0) in (eq? $v2 \
+     $v3))"
 
-(* program_test_cases();; *)
+(* let%test _ = parsing_test_case "(cons FREE_VAR FREE_VAR)"
+   let%test _ = parsing_test_case "rev((cons FREE_VAR FREE_VAR), [$0])"
+   let%test _ = parsing_test_case "rev((cons FREE_VAR FREE_VAR), [$v1])"
+   let%test _ = parsing_test_case "(lambda let $v1, $v2 = rev($0 = (cons $v1 $v2)) in $v2)" *)
 
 let[@warning "-20"] performance_test_case () =
   let e =
@@ -1137,15 +1142,10 @@ let test_zip_recursion () =
 (* Puddleworld primitive and type definitions for compression namespace purposes. Function definitions are irrelevant.*)
 (* Puddleworld Type Definitions *)
 let t_object_p = make_ground "t_object_p"
-
 let t_boolean_p = make_ground "t_boolean_p"
-
 let t_action_p = make_ground "t_action_p"
-
 let t_direction_p = make_ground "t_direction_p"
-
 let t_int_p = make_ground "t_int_p"
-
 let t_model_p = make_ground "t_model_p"
 
 (* Puddleworld Primitive Definitions *)

@@ -129,7 +129,7 @@ let export_frontiers number_enumerated tf solutions : string =
 ;;
 
 
-let _ :unit =
+let run_solver () :unit =
 
   let (tf,g,
        lowerBound,upperBound,budgetIncrement,

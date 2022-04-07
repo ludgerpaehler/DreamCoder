@@ -1,0 +1,9 @@
+(executables
+ (names solver compression helmholtz)
+ (modes native)
+ (ocamlopt_flags :standard -O3 -unboxed-types -nodynlink -w -20)
+ (libraries core core_unix re2 yojson geomLib logoLib dreamcoder ocaml-protoc zmq core_kernel.pairing_heap)  ;parmap
+ (preprocess
+  (pps ppx_deriving.show ppx_jane))
+ (promote (until-clean))
+)

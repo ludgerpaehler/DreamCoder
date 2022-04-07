@@ -3,15 +3,28 @@ open Program
 open Utils
 open Type
 
+module Hashtbl = struct
+  include Base.Hashtbl
+
+  let pp pp_key pp_value ppf values =
+    Hashtbl.iteri values ~f:(fun ~key ~data ->
+        Format.fprintf ppf "@[<1>%a: %a@]@." pp_key key pp_value data)
+end
+
 type vs =
   | Union of int list
   | ApplySpace of int * int
   | AbstractSpace of int
   | IndexSpace of int
   | TerminalSpace of program
+      [@printer fun fmt p -> Format.fprintf fmt "(TerminalSpace %s)" (string_of_program p)]
+  | LetSpace of int * int
+  | LetRevSpace of int * int * int
+  | VarIndexSpace of int
+  | ConstSpace of string
   | Universe
   | Void
-[@@deriving equal]
+[@@deriving equal, show]
 
 type vt = {
   universe : int;
@@ -23,9 +36,9 @@ type vt = {
   n_step_table : (int * int, int) Hashtbl.t;
   substitution_table : (int * int, (int, int) Hashtbl.t) Hashtbl.t;
 }
+[@@deriving show]
 
 let index_table t index = get_resizable t.i2s index
-
 let version_table_size t = t.i2s.ra_occupancy
 
 let clear_dynamic_programming_tables { n_step_table; substitution_table; _ } =
@@ -49,6 +62,13 @@ let rec string_of_versions t j =
   | TerminalSpace p -> string_of_program p
   | Union u ->
       Printf.sprintf "{%s}" (u |> List.map ~f:(string_of_versions t) |> join ~separator:"; ")
+  | LetSpace (d, b) ->
+      Printf.sprintf "let %s in %s" (string_of_versions t d) (string_of_versions t b)
+  | LetRevSpace (v, d, b) ->
+      Printf.sprintf "let rev(%s = %s) in %s" (string_of_versions t v) (string_of_versions t d)
+        (string_of_versions t b)
+  | VarIndexSpace n -> Printf.sprintf "$v%d" n
+  | ConstSpace s -> "Const(" ^ s ^ ")"
 
 let incorporate_space t v : int =
   match Hashtbl.find t.s2i v with
@@ -82,10 +102,19 @@ let version_apply t f x =
   if f = t.void || x = t.void then t.void else incorporate_space t (ApplySpace (f, x))
 
 let version_abstract t b = if b = t.void then t.void else incorporate_space t (AbstractSpace b)
-
 let version_index t i = incorporate_space t (IndexSpace i)
-
 let version_terminal t e = incorporate_space t (TerminalSpace e)
+
+let version_let t d b =
+  if d = t.void || b = t.void then t.void else incorporate_space t (LetSpace (d, b))
+
+let version_let_rev t v d b =
+  if d = t.void || b = t.void || v = t.void then t.void
+  else incorporate_space t (LetRevSpace (v, d, b))
+
+let version_var t n = incorporate_space t (VarIndexSpace n)
+
+let version_const t s = incorporate_space t (ConstSpace s)
 
 let union t vs =
   if List.mem vs t.universe ~equal:( = ) then t.universe
@@ -102,12 +131,73 @@ let union t vs =
     in
     match vs with [] -> t.void | [ v ] -> v | _ -> incorporate_space t (Union vs)
 
-let rec incorporate t e =
+let rec incorporate' t vars e =
   match e with
   | Index i -> version_index t i
-  | Abstraction b -> version_abstract t (incorporate t b)
-  | Apply (f, x) -> version_apply t (incorporate t f) (incorporate t x)
+  | Abstraction b -> version_abstract t (incorporate' t vars b)
+  | Apply (f, x) -> version_apply t (incorporate' t vars f) (incorporate' t vars x)
   | Primitive (_, _, _) | Invented (_, _) -> version_terminal t (strip_primitives e)
+  | LetClause (var_name, d, b) ->
+      version_let t (incorporate' t vars d) (incorporate' t (var_name :: vars) b)
+  | LetRevClause (var_names, inp_var_name, d, b) ->
+      version_let_rev t
+        (incorporate' t vars (FreeVar inp_var_name))
+        (incorporate' t (List.append (List.rev var_names) vars) d)
+        (incorporate' t (List.append (List.rev var_names) vars) b)
+  | FreeVar n -> version_var t (fst (get_some (List.findi vars ~f:(fun _ x -> String.( = ) x n))))
+  | Const n -> version_const t n
+
+let incorporate t r e =
+  match r with
+  | TCon (_, _, _) -> incorporate' t [] e
+  | TNCon (_, args, _, _) -> incorporate' t (List.rev_map args ~f:fst) e
+  | TID _ -> incorporate' t [] e
+
+let%test "test variables renaming" =
+  let t = new_version_table () in
+  let v1 =
+    incorporate t
+      (TNCon ("->", [ ("inp1", tint) ], tint, false))
+      (get_some (parse_program "let $v1 = $inp1 in $v1"))
+  in
+  let v2 =
+    incorporate t
+      (TNCon ("->", [ ("inp1", tint) ], tint, false))
+      (get_some (parse_program "let $v2 = $inp1 in $v2"))
+  in
+  v1 = v2
+
+let%test _ =
+  let t = new_version_table () in
+  let v1 =
+    incorporate t
+      (TNCon ("->", [ ("inp0", tint) ], tint, false))
+      (get_some (parse_program "(cdr $inp0)"))
+  in
+  v1 = 4
+
+let%test _ =
+  let t = new_version_table () in
+  let v1 =
+    incorporate t
+      (TNCon ("->", [ ("inp0", tint) ], tint, false))
+      (get_some (parse_program "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in $v2"))
+  in
+  v1 = 7
+
+let%test _ =
+  let t = new_version_table () in
+  let v1 =
+    incorporate t
+      (TNCon ("->", [ ("inp0", tint) ], tint, false))
+      (get_some (parse_program "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in $v2"))
+  in
+  let v2 =
+    incorporate t
+      (TNCon ("->", [ ("inp1", tint) ], tint, false))
+      (get_some (parse_program "let $v3, $v2 = rev($inp1 = (cons $v3 $v2)) in $v2"))
+  in
+  v1 = v2
 
 let rec extract t j =
   match index_table t j with
@@ -231,7 +321,7 @@ let inline t j =
                 (apply_substitution ~k arguments f)
                 (apply_substitution ~k arguments x)
           | Abstraction b -> version_abstract t (apply_substitution ~k:(k + 1) arguments b)
-          | Primitive (_, _, _) | Invented (_, _) -> incorporate t expression
+          | Primitive (_, _, _) | Invented (_, _) -> incorporate' t [] expression
         in
         match make_substitution [] arguments body with
         | None -> t.void
@@ -239,7 +329,9 @@ let inline t j =
             let f = apply_substitution ~k:0 used_arguments body in
             let remaining_arguments = List.drop arguments (List.length used_arguments) in
             remaining_arguments |> List.fold_left ~init:f ~f:(version_apply t))
-    | Void | Universe | TerminalSpace _ -> t.void
+    | Void | Universe | TerminalSpace _ | LetSpace (_, _) | LetRevSpace (_, _, _) | VarIndexSpace _ | ConstSpace _
+      ->
+        t.void
   in
   il [] j
 
@@ -532,6 +624,7 @@ let reachable_versions t indices : int list =
   Hash_set.fold visited ~f:(fun a x -> x :: a) ~init:[]
 
 (* garbage collection *)
+
 let garbage_collect_versions ?(verbose = false) t indices =
   let nt = new_version_table () in
   let rec reincorporate i =

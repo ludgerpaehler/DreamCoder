@@ -994,6 +994,11 @@ def parseSExpression(s):
             x, n = p(n)
             l.extend(x)
             return l, n
+        if name == "Const":
+            l = [name]
+            x, n = p(n)
+            l.extend(x)
+            return l, n
         return name, n
 
     e, n = p(0)

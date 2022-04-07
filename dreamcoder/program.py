@@ -144,7 +144,10 @@ class Program(object):
     def isLetClause(self): return False
 
     @property
-    def isMultiLetClause(self): return False
+    def isLetRevClause(self): return False
+
+    @property
+    def isConst(self): return False
 
     @staticmethod
     def parse(s):
@@ -162,7 +165,9 @@ class Program(object):
                     if e[-3][0] != 'rev':
                         return LetClause(e[1][1:], p(e[3]), p(e[5]))
                     else:
-                        return MultiLetClause([v[1:] for v in e[1:-4]], e[-3][1][1:], p(e[-3][3]), p(e[-1]))
+                        return LetRevClause([v[1:] for v in e[1:-4]], e[-3][1][1:], p(e[-3][3]), p(e[-1]))
+                if e[0] == 'Const':
+                    return Constant(e[1])
                 f = p(e[0])
                 for x in e[1:]:
                     f = Application(f,p(x))
@@ -878,7 +883,7 @@ class LetClause(Program):
         return True
 
 
-class MultiLetClause(Program):
+class LetRevClause(Program):
     def __init__(self, var_names, inp_var_name, vars_def, body):
         self.var_names = var_names
         self.inp_var_name = inp_var_name
@@ -892,7 +897,7 @@ class MultiLetClause(Program):
                                       self.body.show(False))
 
     @property
-    def isMultiLetClause(self):
+    def isLetRevClause(self):
         return True
 
 
@@ -908,6 +913,18 @@ class FreeVariable(Program):
 
     @property
     def isFreeVariable(self):
+        return True
+
+
+class Constant(Program):
+    def __init__(self, value):
+        self.value = value
+
+    def show(self, isFunction):
+        return f"Const({self.value})"
+
+    @property
+    def isConst(self):
         return True
 
 

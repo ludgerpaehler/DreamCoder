@@ -375,10 +375,18 @@ let compare_list c xs ys =
   if d = 0 then r xs ys else d
 
 
+module Array = struct
+  include Base.Array
+
+  let pp pp_value ppf values =
+    Array.iteri values ~f:(fun i value ->
+      Format.fprintf ppf "@[<1>%d: %a@]@." i pp_value value)
+end
 
 (* resizable arrays *)
 type 'a ra = {mutable ra_occupancy : int;
               mutable ra_contents : ('a option) Array.t}
+[@@deriving show]
 
 let empty_resizable() =
   {ra_occupancy = 0;

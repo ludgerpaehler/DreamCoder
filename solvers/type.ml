@@ -1,13 +1,19 @@
 open Core
 
-type tp = TID of int | TCon of string * tp list * bool [@@deriving equal]
+type tp =
+  | TID of int
+  | TCon of string * tp list * bool
+  | TNCon of string * (string * tp) list * tp * bool
+[@@deriving equal]
 
-let is_polymorphic = function TID _ -> true | TCon (_, _, p) -> p
+let is_polymorphic = function TID _ -> true | TCon (_, _, p) -> p | TNCon (_, _, _, p) -> p
 
 let rec tp_eq a b =
   match (a, b) with
   | TID x, TID y -> x = y
   | TCon (k1, as1, _), TCon (k2, as2, _) -> String.( = ) k1 k2 && type_arguments_equal as1 as2
+  | TNCon (k1, as1, o1, _), TNCon (k2, as2, o2, _) ->
+      String.( = ) k1 k2 && type_named_arguments_equal as1 as2 && tp_eq o1 o2
   | _ -> false
 
 and type_arguments_equal xs ys =
@@ -16,7 +22,17 @@ and type_arguments_equal xs ys =
   | [], [] -> true
   | _ -> false
 
+and type_named_arguments_equal xs ys =
+  match (xs, ys) with
+  | (v1, t1) :: tail1, (v2, t2) :: tail2 ->
+      String.( = ) v1 v2 && tp_eq t1 t2 && type_named_arguments_equal tail1 tail2
+  | [], [] -> true
+  | _ -> false
+
 let kind n ts = TCon (n, ts, ts |> List.exists ~f:is_polymorphic)
+
+let nkind n ts o =
+  TNCon (n, ts, o, ts |> List.exists ~f:(fun (_, t) -> is_polymorphic t) || is_polymorphic o)
 
 (* A context has a size (fst) as well as an array mapping indices to types (snd; the substitution)
    The substitution is stored in reverse order
@@ -29,7 +45,7 @@ let make_arrow t q = kind "->" [ t; q ]
 
 let ( @> ) = make_arrow
 
-let is_arrow = function TCon ("->", _, _) -> true | _ -> false
+let is_arrow = function TCon ("->", _, _) -> true | TNCon ("->", _, _, _) -> true | _ -> false
 
 (* arguments_and_return_up_type (t1 @> t2 @> ... @> T) = ([t1;t2;...] T) *)
 let rec arguments_and_return_of_type t =
@@ -37,20 +53,34 @@ let rec arguments_and_return_of_type t =
   | TCon ("->", [ p; q ], _) ->
       let arguments, return = arguments_and_return_of_type q in
       (p :: arguments, return)
+  | TNCon ("->", _, _, _) -> raise (Failure "Not implemented")
   | _ -> ([], t)
 
 (* return_of_type (t1 @> t2 @> ... @> T) = T *)
-let rec return_of_type t = match t with TCon ("->", [ _; q ], _) -> return_of_type q | _ -> t
+let rec return_of_type t =
+  match t with
+  | TCon ("->", [ _; q ], _) -> return_of_type q
+  | TNCon ("->", _, q, _) -> return_of_type q
+  | _ -> t
 
 (* arguments_of_type (t1 @> t2 @> ... @> T) = [t1;t2;...] *)
 let rec arguments_of_type t =
-  match t with TCon ("->", [ p; q ], _) -> p :: arguments_of_type q | _ -> []
+  match t with
+  | TCon ("->", [ p; q ], _) -> p :: arguments_of_type q
+  | TNCon ("->", _, _, _) -> raise (Failure "Not implemented")
+  | _ -> []
 
 let right_of_arrow t =
-  match t with TCon ("->", [ _; p ], _) -> p | _ -> raise (Failure "right_of_arrow")
+  match t with
+  | TCon ("->", [ _; p ], _) -> p
+  | TNCon ("->", _, p, _) -> p
+  | _ -> raise (Failure "right_of_arrow")
 
 let left_of_arrow t =
-  match t with TCon ("->", [ p; _ ], _) -> p | _ -> raise (Failure "right_of_arrow")
+  match t with
+  | TCon ("->", [ p; _ ], _) -> p
+  | TNCon ("->", _, _, _) -> raise (Failure "Not implemented")
+  | _ -> raise (Failure "left_of_arrow")
 
 let rec show_type (is_return : bool) (t : tp) : string =
   let open String in
@@ -61,6 +91,18 @@ let rec show_type (is_return : bool) (t : tp) : string =
       if is_return then show_type false p ^ " -> " ^ show_type true q
       else "(" ^ show_type false p ^ " -> " ^ show_type true q ^ ")"
   | TCon (k, a, _) -> k ^ "(" ^ String.concat ~sep:", " (List.map a ~f:(show_type true)) ^ ")"
+  | TNCon (k, args, o, _) when k = "->" ->
+      let args_str =
+        String.concat ~sep:" -> " (List.map args ~f:(fun (v, t) -> v ^ ":" ^ (show_type true) t))
+      in
+      if is_return then args_str ^ " -> " ^ show_type true o
+      else "(" ^ args_str ^ " -> " ^ show_type true o ^ ")"
+  | TNCon (k, [], o, _) -> k ^ "(" ^ show_type true o ^ ")"
+  | TNCon (k, args, o, _) ->
+      let args_str =
+        String.concat ~sep:", " (List.map args ~f:(fun (v, t) -> v ^ ":" ^ (show_type true) t))
+      in
+      k ^ "(" ^ args_str ^ ", " ^ show_type true o ^ ")"
 
 let string_of_type = show_type true
 
@@ -104,6 +146,14 @@ let rec applyContext k t =
               (k, x :: xs))
         in
         (k, kind c xs)
+    | TNCon (c, xs, o, _) ->
+        let k, nxs =
+          List.fold_right xs ~init:(k, []) ~f:(fun (v, x) (k, xs) ->
+              let k, x = applyContext k x in
+              (k, (v, x) :: xs))
+        in
+        let k, no = applyContext k o in
+        (k, nkind c nxs no)
     | TID j -> (
         match lookupTID k j with
         | None -> (k, t)
@@ -114,7 +164,11 @@ let rec applyContext k t =
 
 let rec occurs (i : int) (t : tp) : bool =
   if not (is_polymorphic t) then false
-  else match t with TID j -> j = i | TCon (_, ts, _) -> List.exists ts ~f:(occurs i)
+  else
+    match t with
+    | TID j -> j = i
+    | TCon (_, ts, _) -> List.exists ts ~f:(occurs i)
+    | TNCon (_, xs, o, _) -> occurs i o || List.exists xs ~f:(fun (_, x) -> (occurs i) x)
 
 let occursCheck = true
 
@@ -124,6 +178,9 @@ let rec might_unify t1 t2 =
   let open String in
   match (t1, t2) with
   | TCon (k1, as1, _), TCon (k2, as2, _) when k1 = k2 -> List.for_all2_exn as1 as2 ~f:might_unify
+  | TNCon (k1, as1, o1, _), TNCon (k2, as2, o2, _) when k1 = k2 ->
+      List.for_all2_exn as1 as2 ~f:(fun (v1, t1) (v2, t2) -> v1 = v2 && might_unify t1 t2)
+      && might_unify o1 o2
   | TID _, _ -> true
   | _, TID _ -> true
   | _ -> false
@@ -145,6 +202,12 @@ let rec unify context t1 t2 : tContext =
         else bindTID j t context
     | TCon (k1, as1, _), TCon (k2, as2, _) when String.( = ) k1 k2 ->
         List.fold2_exn ~init:context as1 as2 ~f:unify
+    | TNCon (k1, as1, o1, _), TNCon (k2, as2, o2, _) when String.( = ) k1 k2 ->
+        let context =
+          List.fold2_exn ~init:context as1 as2 ~f:(fun context (v1, t1) (v2, t2) ->
+              if String.( = ) v1 v2 then unify context t1 t2 else raise UnificationFailure)
+        in
+        unify context o1 o2
     | _ -> raise UnificationFailure
 
 let instantiate_type k t =
@@ -162,6 +225,8 @@ let instantiate_type k t =
             substitution := (i, t) :: !substitution;
             t)
       | TCon (k, js, _) -> kind k (List.map ~f:instantiate js)
+      | TNCon (k, js, o, _) ->
+          nkind k (List.map ~f:(fun (v, t) -> (v, instantiate t)) js) (instantiate o)
   in
   let q = instantiate t in
   (!k, q)
@@ -191,6 +256,7 @@ let canonical_type t =
           next := 1 + !next;
           TID (!next - 1))
     | TCon (k, a, _) -> kind k (List.map ~f:canon a)
+    | TNCon (k, a, o, _) -> nkind k (List.map ~f:(fun (v, t) -> (v, canon t)) a) (canon o)
   in
   canon t
 
@@ -199,6 +265,11 @@ let rec next_type_variable t =
   | TID i -> i + 1
   | TCon (_, [], _) -> 0
   | TCon (_, is, _) -> List.fold_left ~f:max ~init:0 (List.map is ~f:next_type_variable)
+  | TNCon (_, [], o, _) -> next_type_variable o
+  | TNCon (_, is, o, _) ->
+      max
+        (List.fold_left ~f:max ~init:0 (List.map ~f:(fun (_, t) -> next_type_variable t) is))
+        (next_type_variable o)
 
 (* tries to instantiate a universally quantified type with a given request *)
 (* let instantiated_type universal_type requested_type =
@@ -233,7 +304,10 @@ let rec next_type_variable t =
 
 let rec get_arity t =
   let open String in
-  match t with TCon (a, [ _; r ], _) when a = "->" -> 1 + get_arity r | _ -> 0
+  match t with
+  | TCon (a, [ _; r ], _) when a = "->" -> 1 + get_arity r
+  | TNCon (_, args, o, _) -> List.length args + get_arity o
+  | _ -> 0
 
 let rec pad_type_with_arguments context n t =
   if n = 0 then (context, t)
@@ -299,12 +373,20 @@ let unify_many_types ts =
 let rec deserialize_type j =
   let open Yojson.Basic.Util in
   try
+    let o = j |> member "output" |> deserialize_type in
     let k = j |> member "constructor" |> to_string in
-    let a = j |> member "arguments" |> to_list |> List.map ~f:deserialize_type in
-    kind k a
-  with _ ->
-    let i = j |> member "index" |> to_int in
-    TID i
+    let a =
+      j |> member "arguments" |> to_assoc |> List.map ~f:(fun (v, t) -> (v, deserialize_type t))
+    in
+    nkind k a o
+  with _ -> (
+    try
+      let k = j |> member "constructor" |> to_string in
+      let a = j |> member "arguments" |> to_list |> List.map ~f:deserialize_type in
+      kind k a
+    with _ ->
+      let i = j |> member "index" |> to_int in
+      TID i)
 
 let rec serialize_type t =
   let j : Yojson.Basic.t =
@@ -313,5 +395,12 @@ let rec serialize_type t =
     | TCon (k, a, _) ->
         `Assoc
           [ ("constructor", `String k); ("arguments", `List (a |> List.map ~f:serialize_type)) ]
+    | TNCon (k, args, o, _) ->
+        `Assoc
+          [
+            ("constructor", `String k);
+            ("arguments", `Assoc (args |> List.map ~f:(fun (v, t) -> (v, serialize_type t))));
+            ("output", serialize_type o);
+          ]
   in
   j

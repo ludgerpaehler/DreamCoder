@@ -327,7 +327,7 @@ class Grammar(object):
 
             return context, var_requests, summary
 
-        if expression.isMultiLetClause:
+        if expression.isLetRevClause:
             context, var_requests, summary = self.likelihoodSummary(
                 context,
                 environment,
@@ -354,6 +354,9 @@ class Grammar(object):
 
         if expression.isFreeVariable:
             return context, {expression.name: request}, thisSummary
+
+        if expression.isConst:
+            return context, {}, thisSummary
 
         # Build the candidates
         candidates = self.buildCandidates(request, context, environment, normalize=False, returnTable=True)

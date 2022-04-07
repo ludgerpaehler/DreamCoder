@@ -6,18 +6,23 @@ open Type
 type fast_type =
   | FastVariable of tp option ref
   | FastConstructor of string * (fast_type list) * (tp option)
+  | FastNamedConstructor of string * ((string * fast_type) list) * fast_type * (tp option)
 
 let rec fast_return = function
   | FastConstructor("->", [_;r], _) -> fast_return r
+  | FastNamedConstructor("->", _, r, _) -> fast_return r
   | t -> t
 
 let rec fast_arguments = function
   | FastConstructor("->", [a;r], _) -> a :: fast_arguments r
+  | FastNamedConstructor(_, _, _, _) -> raise (Failure "Not implemented")
   | _ -> []
 
 let fast_polymorphic = function
   | FastConstructor(_,_,Some(_)) -> true
   | FastConstructor(_,_,None) -> false
+  | FastNamedConstructor(_,_,_,Some(_)) -> true
+  | FastNamedConstructor(_,_,_,None) -> false
   | FastVariable(r) -> match !r with
     | None -> true
     | Some(t) -> is_polymorphic t
@@ -31,12 +36,16 @@ let make_fast t =
     | TID(j) -> FastVariable(Array.get mapping j)
     | TCon(n,xs,p) as t ->
       FastConstructor(n, xs |> List.map ~f:make, if p then None else Some(t))
+    | TNCon(n,xs,o,p) as t ->
+      FastNamedConstructor(n, xs |> List.map ~f:(fun (v, x) -> (v, make x)), make o, if p then None else Some(t))
   in
   (make t, mapping)
 
 let rec make_slow next_type_variable = function
   | FastConstructor(n,xs,_) ->
     kind n (xs |> List.map ~f:(make_slow next_type_variable))
+  | FastNamedConstructor(n,xs,o,_) ->
+    nkind n (xs |> List.map ~f:(fun (v,x) -> (v, make_slow next_type_variable x))) (make_slow next_type_variable o)
   | FastVariable(r) -> match !r with
     | Some(t) -> t
     | None ->

@@ -247,12 +247,14 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
   let v = new_version_table () in
 
   (* calculate candidates from the frontiers we can see *)
-  let frontier_indices : int list list =
+  let frontier_indices : (tp * int list) list =
     time_it ~verbose:!verbose_compression "(worker) calculated version spaces" (fun () ->
         !frontiers
         |> List.map ~f:(fun f ->
-               f.programs
-               |> List.map ~f:(fun (p, _) -> incorporate v p |> n_step_inversion v ~inline ~n:arity)))
+               ( f.request,
+                 f.programs
+                 |> List.map ~f:(fun (p, _) ->
+                        incorporate v f.request p |> n_step_inversion v ~inline ~n:arity) )))
   in
   if !collect_data then
     List.iter2_exn !frontiers frontier_indices ~f:(fun frontier indices ->
@@ -652,7 +654,8 @@ let compression_step ~inline ~structurePenalty ~aic ~pseudoCounts ?(arity = 3) ~
         !frontiers
         |> List.map ~f:(fun f ->
                f.programs
-               |> List.map ~f:(fun (p, _) -> incorporate v p |> n_step_inversion ~inline v ~n:arity)))
+               |> List.map ~f:(fun (p, _) ->
+                      incorporate v f.request p |> n_step_inversion ~inline v ~n:arity)))
   in
 
   let candidates : int list =
@@ -841,7 +844,7 @@ let compression_loop ?(nc = 1) ~structurePenalty ~inline ~aic ~topK ~pseudoCount
   in
   time_it "completed ocaml compression" (fun () -> loop ~iterations g frontiers)
 
-let () =
+let run_compression () =
   let open Yojson.Basic.Util in
   let open Yojson.Basic in
   let j =

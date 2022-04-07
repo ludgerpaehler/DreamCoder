@@ -124,6 +124,27 @@ def sample_programs():
             -2.302585092994046,
             # -0.6931471805599453,
         ),
+        (
+            "let $v1 = Const(0) in let $v2 = (map (lambda $0) $inp0) in (cons $v1 $v2)",
+            {
+                "inp0": {
+                    "list": 15,
+                    "int": 58,
+                },
+                "out": {
+                    "list": 15,
+                    "int": 43,
+                },
+                "v1": {
+                    "int": 15,
+                },
+                "v2": {
+                    "list": 15,
+                    "int": 43,
+                },
+            },
+            -7.090076835776092,
+        ),
     ]
     return programs
 
