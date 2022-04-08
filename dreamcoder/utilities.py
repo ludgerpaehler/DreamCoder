@@ -995,9 +995,26 @@ def parseSExpression(s):
             l.extend(x)
             return l, n
         if name == "Const":
-            l = [name]
-            x, n = p(n)
-            l.extend(x)
+            if s[n] != "(":
+                raise ParseFailure(s)
+
+            value = []
+            depth = 0
+            while True:
+                n += 1
+                if n >= len(s):
+                    raise ParseFailure(s)
+                if s[n] == "(":
+                    depth += 1
+                if s[n] == ")":
+                    depth -= 1
+                    if depth == -1:
+                        break
+                value.append(s[n])
+
+            n += 1
+            value = "".join(value)
+            l = [name, value]
             return l, n
         return name, n
 

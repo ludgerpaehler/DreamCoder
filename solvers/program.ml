@@ -933,7 +933,7 @@ let program_parser : program parsing =
     program_parser () %% fun b -> return_parse (LetRevClause (vs, inp, d, b))
   and const_clause =
     constant_parser "Const(" %% fun _ ->
-    token_parser Char.is_alphanum %% fun n ->
+    token_parser (fun c -> Char.(<>) c ')') %% fun n ->
     constant_parser ")" %% fun _ -> return_parse (Const (n))
   in
 
