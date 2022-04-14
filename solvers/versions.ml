@@ -19,9 +19,8 @@ type vs =
   | TerminalSpace of program
       [@printer fun fmt p -> Format.fprintf fmt "(TerminalSpace %s)" (string_of_program p)]
   | LetSpace of int * int
-  | LetRevSpace of int * int * int
+  | LetRevSpace of int * int * int * int
   | VarIndexSpace of int
-  | ConstSpace of string
   | Universe
   | Void
 [@@deriving equal, show]
@@ -64,11 +63,10 @@ let rec string_of_versions t j =
       Printf.sprintf "{%s}" (u |> List.map ~f:(string_of_versions t) |> join ~separator:"; ")
   | LetSpace (d, b) ->
       Printf.sprintf "let %s in %s" (string_of_versions t d) (string_of_versions t b)
-  | LetRevSpace (v, d, b) ->
+  | LetRevSpace (_, v, d, b) ->
       Printf.sprintf "let rev(%s = %s) in %s" (string_of_versions t v) (string_of_versions t d)
         (string_of_versions t b)
   | VarIndexSpace n -> Printf.sprintf "$v%d" n
-  | ConstSpace s -> "Const(" ^ s ^ ")"
 
 let incorporate_space t v : int =
   match Hashtbl.find t.s2i v with
@@ -108,13 +106,11 @@ let version_terminal t e = incorporate_space t (TerminalSpace e)
 let version_let t d b =
   if d = t.void || b = t.void then t.void else incorporate_space t (LetSpace (d, b))
 
-let version_let_rev t v d b =
+let version_let_rev t vc v d b =
   if d = t.void || b = t.void || v = t.void then t.void
-  else incorporate_space t (LetRevSpace (v, d, b))
+  else incorporate_space t (LetRevSpace (vc, v, d, b))
 
 let version_var t n = incorporate_space t (VarIndexSpace n)
-
-let version_const t s = incorporate_space t (ConstSpace s)
 
 let union t vs =
   if List.mem vs t.universe ~equal:( = ) then t.universe
@@ -136,16 +132,15 @@ let rec incorporate' t vars e =
   | Index i -> version_index t i
   | Abstraction b -> version_abstract t (incorporate' t vars b)
   | Apply (f, x) -> version_apply t (incorporate' t vars f) (incorporate' t vars x)
-  | Primitive (_, _, _) | Invented (_, _) -> version_terminal t (strip_primitives e)
+  | Primitive (_, _, _) | Invented (_, _) | Const _ -> version_terminal t (strip_primitives e)
   | LetClause (var_name, d, b) ->
       version_let t (incorporate' t vars d) (incorporate' t (var_name :: vars) b)
   | LetRevClause (var_names, inp_var_name, d, b) ->
-      version_let_rev t
+      version_let_rev t (List.length var_names)
         (incorporate' t vars (FreeVar inp_var_name))
         (incorporate' t (List.append (List.rev var_names) vars) d)
         (incorporate' t (List.append (List.rev var_names) vars) b)
   | FreeVar n -> version_var t (fst (get_some (List.findi vars ~f:(fun _ x -> String.( = ) x n))))
-  | Const n -> version_const t n
 
 let incorporate t r e =
   match r with
@@ -329,11 +324,20 @@ let inline t j =
             let f = apply_substitution ~k:0 used_arguments body in
             let remaining_arguments = List.drop arguments (List.length used_arguments) in
             remaining_arguments |> List.fold_left ~init:f ~f:(version_apply t))
-    | Void | Universe | TerminalSpace _ | LetSpace (_, _) | LetRevSpace (_, _, _) | VarIndexSpace _ | ConstSpace _
-      ->
+    | Void | Universe | TerminalSpace _
+    | LetSpace (_, _)
+    | LetRevSpace (_, _, _, _)
+    | VarIndexSpace _ ->
         t.void
   in
   il [] j
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p = "(#(lambda (lambda (* $2 (+ (lambda $2) $0)))) $0 2)" |> parse_program |> get_some in
+  p |> incorporate' t [] |> inline t |> extract t
+  |> List.iter ~f:(fun p' -> Printf.printf "%s\n" (string_of_program p'));
+  [%expect {| (* $0 (+ (lambda $1) 2)) |}]
 
 let rec recursive_inlining t j =
   (* Constructs vs of all programs that are 1 inlining step away from a program in provided vs *)
@@ -510,7 +514,15 @@ let beta_pruning t j =
         let b' = beta_pruning' ~isApplied:false ~canBeta t b in
         version_abstract t b'
     | Union u -> u |> List.map ~f:(beta_pruning' ~isApplied ~canBeta t) |> union t
-    | IndexSpace _ | TerminalSpace _ | Universe | Void -> j
+    | LetSpace (d, b) ->
+        let d' = beta_pruning' ~isApplied ~canBeta t d in
+        let b' = beta_pruning' ~isApplied ~canBeta t b in
+        version_let t d' b'
+    | LetRevSpace (vc, v, d, b) ->
+        let d' = beta_pruning' ~isApplied ~canBeta t d in
+        let b' = beta_pruning' ~isApplied ~canBeta t b in
+        version_let_rev t vc v d' b'
+    | IndexSpace _ | VarIndexSpace _ | TerminalSpace _ | Universe | Void -> j
   in
   beta_pruning' t j
 
@@ -520,6 +532,201 @@ let rec log_version_size t j =
   | AbstractSpace b -> log_version_size t b
   | Union u -> u |> List.map ~f:(log_version_size t) |> lse_list
   | _ -> 0.
+
+let rec beta_substitution t i d j =
+  match index_table t j with
+  | IndexSpace _ | TerminalSpace _ | Universe | Void -> j
+  | Union u -> u |> List.map ~f:(beta_substitution t i d) |> union t
+  | VarIndexSpace k -> if i = k then d else if k > i then version_var t (k - 1) else j
+  | ApplySpace (f, x) ->
+      let f' = beta_substitution t i d f in
+      let x' = beta_substitution t i d x in
+      version_apply t f' x'
+  | AbstractSpace b ->
+      let b' = beta_substitution t i d b in
+      version_abstract t b'
+  | LetSpace (dd, b) ->
+      let dd' = beta_substitution t i d dd in
+      let b' = beta_substitution t (i + 1) d b in
+      version_let t dd' b'
+  | LetRevSpace (vc, v, dd, b) ->
+      let dd' = beta_substitution t i d dd in
+      let b' = beta_substitution t (i + vc) d b in
+      version_let_rev t vc v dd' b'
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v1 = (car $inp0) in (cons $v1 $inp0)" |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  let p' =
+    match index_table t p with LetSpace (d, b) -> beta_substitution t 0 d b | _ -> assert false
+  in
+  Printf.printf "%s\n" (string_of_versions t p');
+  [%expect {| @(@(cons, @(car, $v0)), $v0) |}]
+
+let rec substitute_rev_var t j r_is i : (int * int * int) option =
+  let open Option in
+  match (r_is, index_table t j) with
+  | _, LetRevSpace (vc, v, d, b) when version_var t i = v ->
+      substitute_rev_var t b (Some (0, vc)) (i + vc) >>= fun (_, _, b') -> Some (vc, d, b')
+  | Some (r_off, r_vc), LetRevSpace (vc, v, d, b) ->
+      substitute_rev_var t b (Some (r_off + vc, r_vc)) (i + vc) >>= fun (_, _, b') ->
+      substitute_rev_var t v r_is i >>= fun (_, _, v') ->
+      Some (0, t.void, version_let_rev t vc v' d b')
+  | None, LetRevSpace (vc, v, d, b) ->
+      substitute_rev_var t b r_is (i + vc) >>= fun (r_vc, r_d, b') ->
+      substitute_rev_var t v (Some (-1, r_vc)) i >>= fun (_, _, v') ->
+      Some (r_vc, r_d, version_let_rev t vc v' d b')
+  | Some (r_off, r_vc), LetSpace (d, b) ->
+      substitute_rev_var t d r_is i >>= fun (_, _, d') ->
+      substitute_rev_var t b (Some (r_off + 1, r_vc)) (i + 1) >>= fun (_, _, b') ->
+      Some (0, t.void, version_let t d' b')
+  | None, LetSpace (d, b) ->
+      substitute_rev_var t b r_is (i + 1) >>= fun (r_vc, r_d, b') ->
+      substitute_rev_var t d (Some (-1, r_vc)) i >>= fun (_, _, d') ->
+      Some (r_vc, r_d, version_let t d' b')
+  | _, Union _u ->
+      raise
+        (Failure (Printf.sprintf "Got Union for replacing a variable %s" (string_of_versions t j)))
+      (* let u' =
+           u
+           |> List.filter_map ~f:(fun j' -> substitute_rev_var t j' r_is i)
+           |> List.map ~f:(fun (_, _, k) -> k)
+         in
+         Some (0, t.void, union t u') *)
+  | None, _ -> None
+  | _, VarIndexSpace k when i = k -> None
+  | Some (-1, _), VarIndexSpace k when k < i -> Some (0, t.void, j)
+  | Some (-1, r_vc), VarIndexSpace k when k > i -> Some (0, t.void, version_var t (k - 1 + r_vc))
+  | Some (r_off, _), VarIndexSpace k when k < r_off -> Some (0, t.void, j)
+  | Some (r_off, r_vc), VarIndexSpace k when k < r_off + r_vc ->
+      Some (0, t.void, version_var t (i - r_vc + k - r_off))
+  | Some (_r_off, r_vc), VarIndexSpace k when k < i -> Some (0, t.void, version_var t (k - r_vc))
+  | _, VarIndexSpace k when k > i -> Some (0, t.void, version_var t (k - 1))
+  | _, VarIndexSpace _ -> raise (Failure "Unexpected VarIndexSpace")
+  | _, ApplySpace (f, x) ->
+      substitute_rev_var t f r_is i >>= fun (_, _, f') ->
+      substitute_rev_var t x r_is i >>= fun (_, _, x') -> Some (0, t.void, version_apply t f' x')
+  | _, AbstractSpace b ->
+      substitute_rev_var t b r_is i >>= fun (_, _, b') -> Some (0, t.void, version_abstract t b')
+  | _, (TerminalSpace _ | IndexSpace _ | Universe | Void) -> Some (0, t.void, j)
+
+let rec update_rev_var_def_indices t j i =
+  match index_table t j with
+  | VarIndexSpace k -> version_var t (k + i)
+  | ApplySpace (f, x) ->
+      let f' = update_rev_var_def_indices t f i in
+      let x' = update_rev_var_def_indices t x i in
+      version_apply t f' x'
+  | AbstractSpace b ->
+      let b' = update_rev_var_def_indices t b i in
+      version_abstract t b'
+  | _ -> j
+
+let rec substitute_rev_var_def t j d i vc =
+  match index_table t j with
+  | VarIndexSpace k -> if i = k then d else if k > i then version_var t (k - 1 + vc) else j
+  | ApplySpace (f, x) ->
+      let f' = substitute_rev_var_def t f d i vc in
+      let x' = substitute_rev_var_def t x d i vc in
+      version_apply t f' x'
+  | AbstractSpace b -> version_abstract t (substitute_rev_var_def t b d i vc)
+  | _ -> j
+
+let beta_rev_substitution t j =
+  match index_table t j with
+  | LetRevSpace (vc, v, d, b) ->
+      List.range 0 vc
+      |> List.filter_map ~f:(fun i ->
+             let open Option in
+             substitute_rev_var t b None i >>= fun (vc', d', b') ->
+             let d'' = update_rev_var_def_indices t d' i in
+             let j' =
+               version_let_rev t (vc - 1 + vc') v (substitute_rev_var_def t d d'' i vc') b'
+             in
+             Some j')
+  | _ -> []
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in let $v3, $v4 = rev($v2 = (cons $v3 $v4)) in \
+     (cons $v1 $v4)" |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with
+    | LetRevSpace (_, _, _, _) -> beta_rev_substitution t p
+    | _ -> assert false
+  in
+  List.iter p' ~f:(fun p'' -> Printf.printf "%s\n" (string_of_versions t p''));
+  [%expect
+    {|
+    let rev($v0 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in @(@(cons, $v3), $v0)
+    let rev($v0 = @(@(cons, $v2), @(@(cons, $v1), $v0))) in @(@(cons, $v2), $v0) |}]
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in let $v3, $v4 = rev($v2 = (cons $v3 $v4)) in let \
+     $v5, $v6 = rev($v4 = (cons $v5 $v6)) in let $v7 = (cons $v3 $v6) in (cons $v1 $v7)"
+    |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with
+    | LetRevSpace (_, _, _, _) -> beta_rev_substitution t p
+    | _ -> assert false
+  in
+  List.iter p' ~f:(fun p'' -> Printf.printf "%s\n" (string_of_versions t p''));
+  [%expect
+    {|
+    let rev($v0 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let @(@(cons, $v3), $v0) in @(@(cons, $v6), $v0)
+    let rev($v0 = @(@(cons, $v2), @(@(cons, $v1), $v0))) in let rev($v0 = @(@(cons, $v1), $v0)) in let @(@(cons, $v3), $v0) in @(@(cons, $v5), $v0) |}]
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in let $v3, $v4 = rev($v2 = (cons $v3 $v4)) in let \
+     $v5, $v6 = rev($v1 = (cons $v5 $v6)) in (cons $v3 $v6)" |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with
+    | LetRevSpace (_, _, _, _) -> beta_rev_substitution t p
+    | _ -> assert false
+  in
+  List.iter p' ~f:(fun p'' -> Printf.printf "%s\n" (string_of_versions t p''));
+  [%expect
+    {|
+    let rev($v0 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let rev($v3 = @(@(cons, $v1), $v0)) in @(@(cons, $v3), $v0)
+    let rev($v0 = @(@(cons, $v2), @(@(cons, $v1), $v0))) in let rev($v2 = @(@(cons, $v1), $v0)) in @(@(cons, $v3), $v0)
+    let rev($v0 = @(@(cons, @(@(cons, $v2), $v1)), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in @(@(cons, $v1), $v3) |}]
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in let $v3 = (car $v2) in let $v4, $v5 = rev($v2 = \
+     (cons $v4 $v5)) in let $v6, $v7 = rev($v5 = (cons $v6 $v7)) in let $v8 = Const(Any[]) in let \
+     $v9 = (cons $v6 $v8) in (cons $v3 $v9)" |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with
+    | LetRevSpace (_, _, _, _) -> beta_rev_substitution t p
+    | _ -> assert false
+  in
+  List.iter p' ~f:(fun p'' -> Printf.printf "%s\n" (string_of_versions t p''));
+  [%expect
+    {|
+    let rev($v0 = @(@(cons, $v1), $v0)) in let @(car, $v0) in let rev($v1 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let Const(Any[]) in let @(@(cons, $v2), $v0) in @(@(cons, $v6), $v0)
+     |}]
 
 let n_step_inversion ?inline:(il = false) t ~n j =
   let key = (n, j) in
@@ -550,6 +757,13 @@ let n_step_inversion ?inline:(il = false) t ~n j =
           | ApplySpace (f, x) -> version_apply t (visit f) (visit x)
           | AbstractSpace b -> version_abstract t (visit b)
           | IndexSpace _ | TerminalSpace _ -> j
+          | LetSpace (d, b) ->
+              union t [ version_let t (visit d) (visit b); visit (beta_substitution t 0 d b) ]
+          | LetRevSpace (vc, v, d, b) ->
+              union t
+                (version_let_rev t vc v (visit d) (visit b)
+                :: List.map ~f:visit (beta_rev_substitution t j))
+          | VarIndexSpace _n -> j
         in
         union t (children :: n_step j)
       in
