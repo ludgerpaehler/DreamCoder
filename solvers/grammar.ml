@@ -232,32 +232,71 @@ let make_likelihood_summary g request expression =
   let s = empty_likelihood_summary () in
   let context = ref empty_context in
 
-  let rec summarize (r : tp) (environment : tp list) (p : program) : unit =
+  let merge_workspaces ws1 ws2 =
+    Hashtbl.merge ws1 ws2 ~f:(fun ~key:_ -> function
+      | `Both (a, b) ->
+          let new_context = unify !context a b in
+          context := new_context;
+          Some (applyContext new_context a |> snd)
+      | `Left a -> Some a
+      | `Right b -> Some b)
+  in
+
+  let rec summarize (r : tp) (environment : tp list) (workspace : (string, tp) Hashtbl.t)
+      (p : program) : (string, tp) Hashtbl.t =
     match r with
     (* a function - must start out with a sequence of lambdas *)
+    | TNCon ("->", arguments, return_type, _) ->
+        let new_workspace =
+          merge_workspaces workspace (Hashtbl.of_alist_exn (module String) arguments)
+        in
+        let var_requests = summarize return_type environment new_workspace p in
+        var_requests
     | TCon ("->", [ argument; return_type ], _) ->
         let newEnvironment = argument :: environment in
         let body = remove_abstractions 1 p in
-        summarize return_type newEnvironment body
+        summarize return_type newEnvironment workspace body
     | _ -> (
         (* not a function - must be an application instead of a lambda *)
-        let candidates = unifying_expressions g environment r !context in
-        match walk_application_tree p with
-        | [] -> raise (Failure "walking the application tree")
-        | f :: xs -> (
-            match
-              List.find candidates ~f:(fun (candidate, _, _, _) -> program_equal candidate f)
-            with
-            | None -> s.likelihood_constant <- Float.neg_infinity
-            | Some (_, argument_types, newContext, _functionLikelihood) ->
-                context := newContext;
-                record_likelihood_event s f
-                  (candidates |> List.map ~f:(fun (candidate, _, _, _) -> candidate));
-                List.iter (List.zip_exn xs argument_types) ~f:(fun (x, x_t) ->
-                    summarize x_t environment x)))
+        match p with
+        | LetClause (name, def, body) ->
+            let var_requests = summarize r environment workspace body in
+            let var_def_requests =
+              summarize (Hashtbl.find_exn var_requests name) environment workspace def
+            in
+            let out_var_requests = merge_workspaces var_requests var_def_requests in
+            Hashtbl.remove out_var_requests name;
+            out_var_requests
+        | LetRevClause (_var_names, inp_name, def, body) ->
+            let inp_name_request = Hashtbl.find_exn workspace inp_name in
+            let var_requests = summarize inp_name_request environment workspace def in
+            let merged_workspace = merge_workspaces workspace var_requests in
+            let var_body_requests = summarize r environment merged_workspace body in
+            Hashtbl.set var_body_requests ~key:inp_name ~data:inp_name_request;
+            var_body_requests
+        | FreeVar name -> Hashtbl.of_alist_exn (module String) [ (name, r) ]
+        | Const _ -> Hashtbl.create (module String)
+        | _ -> (
+            let candidates = unifying_expressions g environment r !context in
+            match walk_application_tree p with
+            | [] -> raise (Failure "walking the application tree")
+            | f :: xs -> (
+                match
+                  List.find candidates ~f:(fun (candidate, _, _, _) -> program_equal candidate f)
+                with
+                | None ->
+                    s.likelihood_constant <- Float.neg_infinity;
+                    Hashtbl.create (module String)
+                | Some (_, argument_types, newContext, _functionLikelihood) ->
+                    context := newContext;
+                    record_likelihood_event s f
+                      (candidates |> List.map ~f:(fun (candidate, _, _, _) -> candidate));
+                    List.map (List.zip_exn xs argument_types) ~f:(fun (x, x_t) ->
+                        summarize x_t environment workspace x)
+                    |> List.fold ~init:(Hashtbl.create (module String)) ~f:merge_workspaces)))
   in
 
-  summarize request [] expression;
+  ignore (summarize request [] (Hashtbl.create (module String)) expression : (string, tp) Hashtbl.t);
   s
 
 let likelihood_under_grammar g request program =

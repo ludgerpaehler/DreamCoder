@@ -48,6 +48,7 @@ let rec show_program (is_function : bool) = function
   | Apply (p, q) ->
       if is_function then show_program true p ^ " " ^ show_program false q
       else "(" ^ show_program true p ^ " " ^ show_program false q ^ ")"
+  | Primitive (t, "FREE_VAR", _) -> "FREE_VAR(" ^ string_of_type t ^ ")"
   | Primitive (_, n, _) -> n
   | Invented (_, i) -> "#" ^ show_program false i
   | LetClause (var, def, body) ->

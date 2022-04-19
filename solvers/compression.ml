@@ -156,6 +156,8 @@ let normalize_invention i =
     | Abstraction b -> Abstraction (visit (d + 1) b)
     | Apply (f, x) -> Apply (visit d f, visit d x)
     | (Primitive (_, _, _) | Invented (_, _)) as e -> e
+    | Const _ | LetClause (_, _, _) | LetRevClause (_, _, _, _) | FreeVar _ ->
+        raise UnificationFailure
   in
 
   let renamed = visit 0 i in
@@ -223,6 +225,7 @@ let nontrivial e =
         visit d x
     | Abstraction b -> visit (d + 1) b
     | Primitive (_, _, _) | Invented (_, _) -> incr primitives
+    | Const _ | LetClause (_, _, _) | LetRevClause (_, _, _, _) | FreeVar _ -> assert false
   in
   visit 0 e;
   !primitives > 1 || (!primitives = 1 && !duplicated_indices > 0)
@@ -660,7 +663,13 @@ let compression_step ~inline ~structurePenalty ~aic ~pseudoCounts ?(arity = 3) ~
 
   let candidates : int list =
     time_it "proposed candidates" (fun () ->
-        let reachable : int list list = frontier_indices |> List.map ~f:(reachable_versions v) in
+        let reachable : int list list =
+          frontier_indices
+          |> List.map ~f:(reachable_versions v)
+          |> List.map ~f:(fun indices ->
+                 List.map indices ~f:(filter_allowed_invention v)
+                 |> List.filter ~f:(fun j -> j <> v.void))
+        in
         let inhabitants : int list list =
           reachable
           |> List.map ~f:(fun indices ->

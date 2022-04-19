@@ -205,6 +205,7 @@ let rec extract t j =
   | TerminalSpace p -> [ p ]
   | AbstractSpace b -> extract t b |> List.map ~f:(fun b' -> Abstraction b')
   | Universe -> [ primitive "UNIVERSE" t0 () ]
+  | VarIndexSpace _ | LetSpace _ | LetRevSpace _ -> assert false
 
 let rec child_spaces t j =
   j
@@ -1004,15 +1005,36 @@ let reachable_versions t indices : int list =
     else (
       Hash_set.add visited j;
       match index_table t j with
-      | Universe | Void | IndexSpace _ | TerminalSpace _ -> ()
+      | Universe | Void | IndexSpace _ | TerminalSpace _ | VarIndexSpace _ -> ()
       | AbstractSpace b -> visit b
       | ApplySpace (f, x) ->
           visit f;
           visit x
-      | Union u -> u |> List.iter ~f:visit)
+      | Union u -> u |> List.iter ~f:visit
+      | LetSpace (d, b) ->
+          visit d;
+          visit b
+      | LetRevSpace (_vc, v, d, b) ->
+          visit v;
+          visit d;
+          visit b)
   in
   indices |> List.iter ~f:visit;
   Hash_set.fold visited ~f:(fun a x -> x :: a) ~init:[]
+
+let rec filter_allowed_invention t j =
+  match index_table t j with
+  | LetSpace (_, _)
+  | LetRevSpace (_, _, _, _)
+  | VarIndexSpace _
+  | TerminalSpace (Const _)
+  | Universe | Void ->
+      t.void
+  | AbstractSpace b -> version_abstract t (filter_allowed_invention t b)
+  | ApplySpace (f, x) ->
+      version_apply t (filter_allowed_invention t f) (filter_allowed_invention t x)
+  | Union u -> union t (u |> List.map ~f:(filter_allowed_invention t))
+  | IndexSpace _ | TerminalSpace _ -> j
 
 (* garbage collection *)
 
@@ -1061,7 +1083,7 @@ let rec minimum_cost_inhabitants ?(given = None) ?(canBeLambda = true) t j : flo
         | _ -> (
             match index_table t.cost_table_parent j with
             | Universe | Void -> assert false
-            | IndexSpace _ | TerminalSpace _ -> (1., [ j ])
+            | IndexSpace _ | TerminalSpace _ | VarIndexSpace _ -> (1., [ j ])
             | Union u ->
                 let children = u |> List.map ~f:(minimum_cost_inhabitants ~given ~canBeLambda t) in
                 let c = children |> List.map ~f:fst |> fold1 Float.min in
@@ -1084,7 +1106,32 @@ let rec minimum_cost_inhabitants ?(given = None) ?(canBeLambda = true) t j : flo
                     fs
                     |> List.map ~f:(fun f' ->
                            xs |> List.map ~f:(fun x' -> version_apply t.cost_table_parent f' x'))
-                    |> List.concat ))
+                    |> List.concat )
+            | LetSpace (d, b) ->
+                let dc, ds = minimum_cost_inhabitants ~given ~canBeLambda:false t d in
+                let bc, bs = minimum_cost_inhabitants ~given ~canBeLambda:true t b in
+                if is_invalid dc || is_invalid bc then (Float.infinity, [])
+                else
+                  ( dc +. bc +. epsilon_cost,
+                    ds
+                    |> List.map ~f:(fun d' ->
+                           bs |> List.map ~f:(fun b' -> version_let t.cost_table_parent d' b'))
+                    |> List.concat )
+            | LetRevSpace (vcount, v, d, b) ->
+                let vc, vs = minimum_cost_inhabitants ~given ~canBeLambda:false t v in
+                let dc, ds = minimum_cost_inhabitants ~given ~canBeLambda:false t d in
+                let bc, bs = minimum_cost_inhabitants ~given ~canBeLambda:true t b in
+                if is_invalid vc || is_invalid dc || is_invalid bc then (Float.infinity, [])
+                else
+                  ( vc +. dc +. bc +. epsilon_cost,
+                    vs
+                    |> List.map ~f:(fun v' ->
+                           ds
+                           |> List.map ~f:(fun d' ->
+                                  bs
+                                  |> List.map ~f:(fun b' ->
+                                         version_let_rev t.cost_table_parent vcount v' d' b')))
+                    |> List.concat |> List.concat ))
       in
       let cost, indices = c in
       let indices = indices |> List.dedup_and_sort ~compare:( - ) in
@@ -1257,6 +1304,29 @@ let beam_costs'' ~ct ~bs (candidates : int list) (frontier_indices : int list li
                    let c = epsilon_cost +. relative_function fb i +. relative_argument xb i in
                    relax bm.relative_function i c;
                    relax bm.relative_argument i c)
+        | LetSpace (d, b) ->
+            let db = calculate_costs d in
+            let bb = calculate_costs b in
+            let domain = Hashtbl.keys db.relative_argument @ Hashtbl.keys bb.relative_argument in
+            domain
+            |> List.iter ~f:(fun i ->
+                   let c = epsilon_cost +. relative_argument db i +. relative_argument bb i in
+                   relax bm.relative_argument i c)
+        | LetRevSpace (_vc, v, d, b) ->
+            let vb = calculate_costs v in
+            let db = calculate_costs d in
+            let bb = calculate_costs b in
+            let domain =
+              Hashtbl.keys vb.relative_argument @ Hashtbl.keys db.relative_argument
+              @ Hashtbl.keys bb.relative_argument
+            in
+            domain
+            |> List.iter ~f:(fun i ->
+                   let c =
+                     epsilon_cost +. relative_argument vb i +. relative_argument db i
+                     +. relative_argument bb i
+                   in
+                   relax bm.relative_argument i c)
         | Union u ->
             u
             |> List.iter ~f:(fun u ->
@@ -1265,7 +1335,7 @@ let beam_costs'' ~ct ~bs (candidates : int list) (frontier_indices : int list li
                    |> Hashtbl.iteri ~f:(fun ~key ~data -> relax bm.relative_function key data);
                    child.relative_argument
                    |> Hashtbl.iteri ~f:(fun ~key ~data -> relax bm.relative_argument key data))
-        | IndexSpace _ | Universe | Void | TerminalSpace _ -> ());
+        | IndexSpace _ | Universe | Void | TerminalSpace _ | VarIndexSpace _ -> ());
         narrow ~bs bm;
         set_resizable caching_table j (Some bm);
         bm
