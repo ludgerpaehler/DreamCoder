@@ -534,11 +534,24 @@ let rec log_version_size t j =
   | Union u -> u |> List.map ~f:(log_version_size t) |> lse_list
   | _ -> 0.
 
+let rec shift_var_def_indices t j i =
+  match index_table t j with
+  | VarIndexSpace k -> version_var t (k + i)
+  | ApplySpace (f, x) ->
+      let f' = shift_var_def_indices t f i in
+      let x' = shift_var_def_indices t x i in
+      version_apply t f' x'
+  | AbstractSpace b ->
+      let b' = shift_var_def_indices t b i in
+      version_abstract t b'
+  | _ -> j
+
 let rec beta_substitution t i d j =
   match index_table t j with
   | IndexSpace _ | TerminalSpace _ | Universe | Void -> j
   | Union u -> u |> List.map ~f:(beta_substitution t i d) |> union t
-  | VarIndexSpace k -> if i = k then d else if k > i then version_var t (k - 1) else j
+  | VarIndexSpace k ->
+      if i = k then shift_var_def_indices t d i else if k > i then version_var t (k - 1) else j
   | ApplySpace (f, x) ->
       let f' = beta_substitution t i d f in
       let x' = beta_substitution t i d x in
@@ -589,6 +602,25 @@ let%expect_test _ =
     let rev($v0 = @(@(cons, $v1), $v0)) in @(@(cons, $v1), Const(Any[]))
         |}]
 
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v3 = (car $v2) in let $v4, $v5 = rev($v2 = (cons $v4 $v5)) in let $v6, $v7 = rev($v5 = \
+     (cons $v6 $v7)) in let $v8 = Const(Any[]) in let $v9 = (cons $v6 $v8) in (cons $v3 $v9)"
+    |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("v2", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with LetSpace (d, b) -> beta_substitution t 0 d b | _ -> assert false
+  in
+  Printf.printf "%s\n" (string_of_versions t p');
+  [%expect
+    {|
+    let @(car, $v0) in let rev($v1 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let Const(Any[]) in let @(@(cons, $v2), $v0) in @(@(cons, $v6), $v0)
+    let rev($v0 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let Const(Any[]) in let @(@(cons, $v2), $v0) in @(@(cons, @(car, $v6)), $v0)
+              |}]
+
 let rec substitute_rev_var t j r_is i : (int * int * int) option =
   let open Option in
   match (r_is, index_table t j) with
@@ -636,18 +668,6 @@ let rec substitute_rev_var t j r_is i : (int * int * int) option =
       substitute_rev_var t b r_is i >>= fun (_, _, b') -> Some (0, t.void, version_abstract t b')
   | _, (TerminalSpace _ | IndexSpace _ | Universe | Void) -> Some (0, t.void, j)
 
-let rec update_rev_var_def_indices t j i =
-  match index_table t j with
-  | VarIndexSpace k -> version_var t (k + i)
-  | ApplySpace (f, x) ->
-      let f' = update_rev_var_def_indices t f i in
-      let x' = update_rev_var_def_indices t x i in
-      version_apply t f' x'
-  | AbstractSpace b ->
-      let b' = update_rev_var_def_indices t b i in
-      version_abstract t b'
-  | _ -> j
-
 let rec substitute_rev_var_def t j d i vc =
   match index_table t j with
   | VarIndexSpace k -> if i = k then d else if k > i then version_var t (k - 1 + vc) else j
@@ -665,7 +685,7 @@ let beta_rev_substitution t j =
       |> List.filter_map ~f:(fun i ->
              let open Option in
              substitute_rev_var t b None i >>= fun (vc', d', b') ->
-             let d'' = update_rev_var_def_indices t d' i in
+             let d'' = shift_var_def_indices t d' i in
              let j' =
                version_let_rev t (vc - 1 + vc') v (substitute_rev_var_def t d d'' i vc') b'
              in
@@ -923,6 +943,25 @@ let%expect_test _ =
     let rev($v0 = @(@(cons, $v1), $v0)) in let @(car, $v2) in let rev($v1 = @(@(cons, $v1), $v0)) in let Const(Any[]) in let @(@(cons, $v2), $v0) in @(@(cons, $v4), $v0)
      |}]
 
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in let $v3 = (car $v2) in let $v4, $v5 = rev($v2 = \
+     (cons $v4 $v5)) in let $v6, $v7 = rev($v5 = (cons $v6 $v7)) in let $v8 = Const(Any[]) in let \
+     $v9 = (cons $v6 $v8) in (cons $v3 $v9)" |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with LetRevSpace (_, _, _, _) -> reorder_lets t p | _ -> assert false
+  in
+  List.iter p' ~f:(fun p'' -> Printf.printf "%s\n" (string_of_versions t p''));
+  [%expect
+    {|
+    let rev($v0 = @(@(cons, $v1), $v0)) in let @(car, $v0) in let rev($v1 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let Const(Any[]) in let @(@(cons, $v2), $v0) in @(@(cons, $v6), $v0)
+    let Const(Any[]) in let rev($v1 = @(@(cons, $v1), $v0)) in let @(car, $v0) in let rev($v1 = @(@(cons, $v1), $v0)) in let rev($v0 = @(@(cons, $v1), $v0)) in let @(@(cons, $v1), $v7) in @(@(cons, $v5), $v0)
+        |}]
+
 let n_step_inversion ?inline:(il = false) t ~n j =
   let key = (n, j) in
   match Hashtbl.find t.n_step_table key with
@@ -1071,6 +1110,10 @@ let garbage_collect_versions ?(verbose = false) t indices =
     | TerminalSpace p -> version_terminal nt p
     | Universe -> nt.universe
     | Void -> nt.void
+    | LetSpace (d, b) -> version_let nt (reincorporate d) (reincorporate b)
+    | LetRevSpace (vc, v, d, b) ->
+        version_let_rev nt vc (reincorporate v) (reincorporate d) (reincorporate b)
+    | VarIndexSpace n -> version_var nt n
   in
   let indices = indices |> List.map ~f:(List.map ~f:reincorporate) in
   if verbose then
@@ -1251,7 +1294,7 @@ let rec minimal_inhabitant ?(intersectionTable = None) ?(given = None) ?(canBeLa
               in
               let v = "v" ^ string_of_int (List.length workspace) in
               let b' =
-                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t (v :: workspace) b
+                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t (v :: workspace) b
                 |> get_some
               in
               LetClause (v, d', b')
@@ -1275,7 +1318,7 @@ let rec minimal_inhabitant ?(intersectionTable = None) ?(given = None) ?(canBeLa
                 | _ -> assert false
               in
               let b' =
-                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t
+                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t
                   (new_vars @ workspace) b
                 |> get_some
               in
@@ -1441,12 +1484,13 @@ let beam_costs ~ct ~bs (candidates : int list) (frontier_indices : int list list
   let scored = List.zip_exn (beam_costs' ~ct ~bs candidates frontier_indices) candidates in
   scored |> List.sort ~compare:(fun (s1, _) (s2, _) -> Float.compare s1 s2)
 
-let batched_refactor ~ct (candidates : int list) (frontier_indices : int list list) =
+let batched_refactor ~ct (candidates : int list) (frontier_requests : tp list)
+    (frontier_indices : int list list) =
   let caching_table = beam_costs'' ~ct ~bs:(List.length candidates) candidates frontier_indices in
 
   let v = ct.cost_table_parent in
 
-  let rec refactor ~canBeLambda i j =
+  let rec refactor ~canBeLambda workspace i j =
     let inhabitants = minimum_cost_inhabitants ~canBeLambda:true ct j |> snd in
 
     if List.mem ~equal:( = ) inhabitants i then i |> extract v |> singleton_head
@@ -1454,20 +1498,46 @@ let batched_refactor ~ct (candidates : int list) (frontier_indices : int list li
       match index_table v j with
       | AbstractSpace b ->
           assert canBeLambda;
-          Abstraction (refactor ~canBeLambda:true i b)
-      | ApplySpace (f, x) -> Apply (refactor ~canBeLambda:false i f, refactor ~canBeLambda:true i x)
+          Abstraction (refactor ~canBeLambda:true workspace i b)
+      | ApplySpace (f, x) ->
+          Apply (refactor ~canBeLambda:false workspace i f, refactor ~canBeLambda:true workspace i x)
       | Union u ->
           u
           |> minimum_by (fun u' ->
                  let bm' = get_resizable caching_table u' |> get_some in
                  (if canBeLambda then relative_argument else relative_function) bm' i)
-          |> refactor ~canBeLambda i
+          |> refactor ~canBeLambda workspace i
       | IndexSpace j -> Index j
       | TerminalSpace e -> e
+      | VarIndexSpace n -> FreeVar (List.nth_exn workspace n)
+      | LetSpace (d, b) ->
+          let d' = refactor ~canBeLambda:false workspace i d in
+          let v = "v" ^ string_of_int (List.length workspace) in
+          let b' = refactor ~canBeLambda:false (v :: workspace) i b in
+          LetClause (v, d', b')
+      | LetRevSpace (vcount, v, d, b) ->
+          let new_vars =
+            List.rev_map
+              ~f:(fun i -> "v" ^ string_of_int (List.length workspace + i))
+              (List.range 0 vcount)
+          in
+          let d' = refactor ~canBeLambda:false (new_vars @ workspace) i d in
+          let v' =
+            match refactor ~canBeLambda:false workspace i v with
+            | FreeVar n -> n
+            | _ -> assert false
+          in
+          let b' = refactor ~canBeLambda:false (new_vars @ workspace) i b in
+          LetRevClause (List.rev new_vars, v', d', b')
       | Universe | Void -> assert false
   in
 
   candidates
   |> List.map ~f:(fun i ->
-         frontier_indices
-         |> List.map ~f:(fun f -> f |> List.map ~f:(fun j -> refactor ~canBeLambda:true i j)))
+         List.map2_exn frontier_indices frontier_requests ~f:(fun f req ->
+             let initial_workspace =
+               match req with
+               | TNCon (_, arguments, _, _) -> List.rev_map arguments ~f:fst
+               | _ -> []
+             in
+             f |> List.map ~f:(fun j -> refactor ~canBeLambda:true initial_workspace i j)))

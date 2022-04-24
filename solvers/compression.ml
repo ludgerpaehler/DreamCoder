@@ -287,14 +287,13 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
   let v = new_version_table () in
 
   (* calculate candidates from the frontiers we can see *)
-  let frontier_indices : (tp * int list) list =
+  let frontier_indices : int list list =
     time_it ~verbose:!verbose_compression "(worker) calculated version spaces" (fun () ->
         !frontiers
         |> List.map ~f:(fun f ->
-               ( f.request,
-                 f.programs
-                 |> List.map ~f:(fun (p, _) ->
-                        incorporate v f.request p |> n_step_inversion v ~inline ~n:arity) )))
+               f.programs
+               |> List.map ~f:(fun (p, _) ->
+                      incorporate v f.request p |> n_step_inversion v ~inline ~n:arity)))
   in
   if !collect_data then
     List.iter2_exn !frontiers frontier_indices ~f:(fun frontier indices ->
@@ -333,7 +332,13 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
   let candidate_table = new_version_table () in
   let candidates : int list list =
     time_it ~verbose:!verbose_compression "(worker) proposed candidates" (fun () ->
-        let reachable : int list list = frontier_indices |> List.map ~f:(reachable_versions v) in
+        let reachable : int list list =
+          frontier_indices
+          |> List.map ~f:(reachable_versions v)
+          |> List.map ~f:(fun indices ->
+                 List.map indices ~f:(filter_allowed_invention v)
+                 |> List.filter ~f:(fun j -> j <> v.void))
+        in
         let inhabitants : int list list =
           reachable
           |> List.map ~f:(fun indices ->
@@ -341,7 +346,7 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
                  |> List.dedup_and_sort ~compare:( - )
                  |> List.map ~f:(List.hd_exn % extract v)
                  |> List.filter ~f:nontrivial
-                 |> List.map ~f:(incorporate candidate_table))
+                 |> List.map ~f:(incorporate' candidate_table []))
         in
         inhabitants)
   in
@@ -356,7 +361,7 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
   send (candidates, candidate_table.i2s);
   let[@warning "-26"] candidate_table = () in
   let candidates : program list = receive () in
-  let candidates : int list = candidates |> List.map ~f:(incorporate v) in
+  let candidates : int list = candidates |> List.map ~f:(incorporate' v []) in
 
   if !verbose_compression then (
     Printf.eprintf "(worker) Got %d candidates.\n" (List.length candidates);
@@ -376,19 +381,25 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
     time_it ~verbose:!verbose_compression "(worker) rewrote frontiers" (fun () ->
         time_it ~verbose:!verbose_compression "(worker) gc during rewrite" Gc.compact;
         let intersectionTable = Some (Hashtbl.Poly.create ()) in
-        let i = incorporate v invention_source in
+        let i = incorporate' v [] invention_source in
         let rewriter = rewrite_with_invention invention_source in
         (* Extract the frontiers in terms of the new primitive *)
         let new_cost_table = empty_cheap_cost_table v in
         let new_frontiers =
           List.map !frontiers ~f:(fun frontier ->
+              let initial_workspace =
+                match frontier.request with
+                | TNCon (_, arguments, _, _) -> List.rev_map arguments ~f:fst
+                | _ -> []
+              in
               let programs' =
                 List.map frontier.programs ~f:(fun (originalProgram, ll) ->
                     let index =
-                      incorporate v originalProgram |> n_step_inversion ~inline v ~n:arity
+                      incorporate v frontier.request originalProgram |> n_step_inversion ~inline v ~n:arity
                     in
                     let program =
-                      minimal_inhabitant ~intersectionTable new_cost_table ~given:(Some i) index
+                      minimal_inhabitant ~intersectionTable new_cost_table ~given:(Some i)
+                        initial_workspace index
                       |> get_some
                     in
                     let program' =
@@ -405,16 +416,17 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
   let batched_rewrite inventions =
     time_it ~verbose:!verbose_compression "(worker) batched rewrote frontiers" (fun () ->
         Gc.compact ();
-        let invention_indices : int list = inventions |> List.map ~f:(incorporate v) in
+        let invention_indices : int list = inventions |> List.map ~f:(incorporate' v []) in
         let frontier_indices : int list list =
           !frontiers
           |> List.map ~f:(fun f ->
                  f.programs
-                 |> List.map ~f:(n_step_inversion ~inline v ~n:arity % incorporate v % fst))
+                 |> List.map ~f:(n_step_inversion ~inline v ~n:arity % incorporate v f.request % fst))
         in
+        let frontier_requests = !frontiers |> List.map ~f:(fun f -> f.request) in
         clear_dynamic_programming_tables v;
         let refactored =
-          batched_refactor ~ct:(empty_cost_table v) invention_indices frontier_indices
+          batched_refactor ~ct:(empty_cost_table v) invention_indices frontier_requests frontier_indices
         in
         Gc.compact ();
         List.map2_exn refactored inventions ~f:(fun new_programs invention ->
@@ -423,7 +435,7 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
                 let programs' =
                   List.map2_exn new_programs frontier.programs
                     ~f:(fun program (originalProgram, ll) ->
-                      if
+                      (* if
                         not
                           (program_equal
                              (beta_normal_form ~reduceInventions:true program)
@@ -435,7 +447,7 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
                         Printf.eprintf
                           "This has never occurred before! Definitely send this to Kevin, if this \
                            occurs it is a terrifying bug.\n";
-                        assert false);
+                        assert false); *)
                       let program' =
                         try rewriter frontier.request program
                         with EtaExpandFailure -> originalProgram
@@ -459,22 +471,28 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
         |> List.iter ~f:(fun f ->
                f.programs
                |> List.iter ~f:(fun (p, _) ->
-                      Hashtbl.set frontier_inversions ~key:(incorporate v p)
-                        ~data:(n_step_inversion ~inline v ~n:arity (incorporate v p)))));
+                      Hashtbl.set frontier_inversions ~key:(incorporate v f.request p)
+                        ~data:(n_step_inversion ~inline v ~n:arity (incorporate v f.request p)))));
     clear_dynamic_programming_tables v;
     Gc.compact ();
 
-    let i = incorporate v invention in
+    let i = incorporate' v [] invention in
     let new_cost_table = empty_cheap_cost_table v in
     time_it ~verbose:!verbose_compression "(worker) did final refactor" (fun () ->
         List.map !frontiers ~f:(fun frontier ->
+            let initial_workspace =
+              match frontier.request with
+              | TNCon (_, arguments, _, _) -> List.rev_map arguments ~f:fst
+              | _ -> []
+            in
             let programs' =
               List.map frontier.programs ~f:(fun (originalProgram, ll) ->
                   let index =
-                    Hashtbl.find_exn frontier_inversions (incorporate v originalProgram)
+                    Hashtbl.find_exn frontier_inversions (incorporate v frontier.request originalProgram)
                   in
                   let program =
-                    minimal_inhabitant new_cost_table ~given:(Some i) index |> get_some
+                    minimal_inhabitant new_cost_table ~given:(Some i) initial_workspace index
+                    |> get_some
                   in
                   let program' =
                     try rewrite_with_invention invention frontier.request program
