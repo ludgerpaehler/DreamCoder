@@ -58,7 +58,7 @@ let rec show_program (is_function : bool) = function
       ^ String.concat ~sep:", " (List.map vars ~f:(fun var -> "$" ^ var))
       ^ " = rev($" ^ inp ^ " = " ^ show_program false def ^ ") in " ^ show_program false body
   | FreeVar n -> "$" ^ n
-  | Const n -> "Const("^n^")"
+  | Const n -> "Const(" ^ n ^ ")"
 
 let string_of_program = show_program false
 
@@ -73,6 +73,13 @@ let rec program_equal p1 p2 =
   | Invented (_, a), Invented (_, b) -> program_equal a b
   | Index a, Index b -> a = b
   | Apply (a, b), Apply (x, y) -> program_equal a x && program_equal b y
+  | LetClause (v1, d1, b1), LetClause (v2, d2, b2) ->
+      String.( = ) v1 v2 && program_equal d1 d2 && program_equal b1 b2
+  | LetRevClause (vns1, iv1, d1, b1), LetRevClause (vns2, iv2, d2, b2) ->
+      List.equal String.( = ) vns1 vns2 && String.( = ) iv1 iv2 && program_equal d1 d2
+      && program_equal b1 b2
+  | FreeVar v1, FreeVar v2 -> String.( = ) v1 v2
+  | Const c1, Const c2 -> String.( = ) c1 c2
   | _ -> false
 
 let rec compare_program p1 p2 =
@@ -239,9 +246,17 @@ let rec shift_free_variables ?(height = 0) shift p =
       if j < height then p else if j + shift < 0 then raise ShiftFailure else Index (j + shift)
   | Apply (f, x) ->
       Apply (shift_free_variables ~height shift f, shift_free_variables ~height shift x)
-  | Invented (_, _) -> p
-  | Primitive (_, _, _) -> p
+  | Invented (_, _) | Primitive (_, _, _) | Const _ | FreeVar _ -> p
   | Abstraction b -> Abstraction (shift_free_variables ~height:(height + 1) shift b)
+  | LetClause (vnames, def, body) ->
+      LetClause
+        (vnames, shift_free_variables ~height shift def, shift_free_variables ~height shift body)
+  | LetRevClause (vnames, inp_var_name, def, body) ->
+      LetRevClause
+        ( vnames,
+          inp_var_name,
+          shift_free_variables ~height shift def,
+          shift_free_variables ~height shift body )
 
 let rec free_variables ?(d = 0) e =
   match e with
@@ -274,6 +289,18 @@ let rec beta_normal_form ?(reduceInventions = false) e =
                       (shift_free_variables ~height:0 (-1)
                          (substitute 0 (shift_free_variables 1 x) body))
                 | _ -> None)))
+    | LetClause (vname, def, body) -> (
+        match step def with
+        | Some def' -> Some (LetClause (vname, def', body))
+        | None -> (
+            match step body with Some body' -> Some (LetClause (vname, def, body')) | None -> None))
+    | LetRevClause (vnames, inp_var_name, def, body) -> (
+        match step def with
+        | Some def' -> Some (LetRevClause (vnames, inp_var_name, def', body))
+        | None -> (
+            match step body with
+            | Some body' -> Some (LetRevClause (vnames, inp_var_name, def, body'))
+            | None -> None))
     | _ -> None
   in
   match step e with None -> e | Some e' -> beta_normal_form ~reduceInventions e'
@@ -934,8 +961,8 @@ let program_parser : program parsing =
     program_parser () %% fun b -> return_parse (LetRevClause (vs, inp, d, b))
   and const_clause =
     constant_parser "Const(" %% fun _ ->
-    token_parser (fun c -> Char.(<>) c ')') %% fun n ->
-    constant_parser ")" %% fun _ -> return_parse (Const (n))
+    token_parser (fun c -> Char.( <> ) c ')') %% fun n ->
+    constant_parser ")" %% fun _ -> return_parse (Const n)
   in
 
   program_parser ()

@@ -551,9 +551,13 @@ let rec beta_substitution t i d j =
       let b' = beta_substitution t (i + 1) d b in
       version_let t dd' b'
   | LetRevSpace (vc, v, dd, b) ->
-      let dd' = beta_substitution t i d dd in
+      let v' =
+        match index_table t v with
+        | VarIndexSpace k -> if i = k then t.void else if k > i then version_var t (k - 1) else v
+        | _ -> assert false
+      in
       let b' = beta_substitution t (i + vc) d b in
-      version_let_rev t vc v dd' b'
+      version_let_rev t vc v' dd b'
 
 let%expect_test _ =
   let t = new_version_table () in
@@ -566,6 +570,24 @@ let%expect_test _ =
   in
   Printf.printf "%s\n" (string_of_versions t p');
   [%expect {| @(@(cons, @(car, $v0)), $v0) |}]
+
+let%expect_test _ =
+  let t = new_version_table () in
+  let p =
+    "let $v3 = Const(Any[]) in let $v1, $v2 = rev($inp0 = (cons $v1 $v2)) in (cons $v1 $v3)"
+    |> parse_program |> get_some
+    |> incorporate t (TNCon ("->", [ ("inp0", tint) ], tint, false))
+  in
+  Printf.printf "%s\n" (string_of_versions t p);
+  let p' =
+    match index_table t p with LetSpace (d, b) -> beta_substitution t 0 d b | _ -> assert false
+  in
+  Printf.printf "%s\n" (string_of_versions t p');
+  [%expect
+    {|
+    let Const(Any[]) in let rev($v1 = @(@(cons, $v1), $v0)) in @(@(cons, $v1), $v2)
+    let rev($v0 = @(@(cons, $v1), $v0)) in @(@(cons, $v1), Const(Any[]))
+        |}]
 
 let rec substitute_rev_var t j r_is i : (int * int * int) option =
   let open Option in
@@ -1165,7 +1187,7 @@ let rec minimal_inhabitant_cost ?(intersectionTable = None) ?(given = None) ?(ca
         | _ -> (
             match index_table t.cost_table_parent j with
             | Universe | Void -> assert false
-            | IndexSpace _ | TerminalSpace _ -> 1.
+            | IndexSpace _ | TerminalSpace _ | VarIndexSpace _ -> 1.
             | Union u ->
                 u
                 |> List.map ~f:(minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda t)
@@ -1177,13 +1199,22 @@ let rec minimal_inhabitant_cost ?(intersectionTable = None) ?(given = None) ?(ca
             | ApplySpace (f, x) ->
                 epsilon_cost
                 +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:false t f
-                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:true t x)
+                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:true t x
+            | LetSpace (d, b) ->
+                epsilon_cost
+                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:false t d
+                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:true t b
+            | LetRevSpace (_vcount, v, d, b) ->
+                epsilon_cost
+                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:false t v
+                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:false t d
+                +. minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda:true t b)
       in
       set_resizable caching_table j (Some c);
       c
 
-let rec minimal_inhabitant ?(intersectionTable = None) ?(given = None) ?(canBeLambda = true) t j :
-    program option =
+let rec minimal_inhabitant ?(intersectionTable = None) ?(given = None) ?(canBeLambda = true) t
+    workspace j : program option =
   let c = minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda t j in
   if is_invalid c then None
   else
@@ -1197,18 +1228,58 @@ let rec minimal_inhabitant ?(intersectionTable = None) ?(given = None) ?(canBeLa
           match vs with
           | Universe | Void -> assert false
           | IndexSpace _ | TerminalSpace _ -> extract t.cost_table_parent j |> singleton_head
+          | VarIndexSpace n -> FreeVar (List.nth_exn workspace n)
           | Union u ->
               u
               |> minimum_by (minimal_inhabitant_cost ~intersectionTable ~given ~canBeLambda t)
-              |> minimal_inhabitant ~intersectionTable ~given ~canBeLambda t
+              |> minimal_inhabitant ~intersectionTable ~given ~canBeLambda t workspace
               |> get_some
           | AbstractSpace b ->
               Abstraction
-                (minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t b |> get_some)
+                (minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t workspace b
+                |> get_some)
           | ApplySpace (f, x) ->
               Apply
-                ( minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t f |> get_some,
-                  minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t x |> get_some ))
+                ( minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t workspace f
+                  |> get_some,
+                  minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t workspace x
+                  |> get_some )
+          | LetSpace (d, b) ->
+              let d' =
+                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t workspace d
+                |> get_some
+              in
+              let v = "v" ^ string_of_int (List.length workspace) in
+              let b' =
+                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t (v :: workspace) b
+                |> get_some
+              in
+              LetClause (v, d', b')
+          | LetRevSpace (vcount, v, d, b) ->
+              let new_vars =
+                List.rev_map
+                  ~f:(fun i -> "v" ^ string_of_int (List.length workspace + i))
+                  (List.range 0 vcount)
+              in
+              let d' =
+                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t
+                  (new_vars @ workspace) d
+                |> get_some
+              in
+              let v' =
+                match
+                  minimal_inhabitant ~intersectionTable ~given ~canBeLambda:false t workspace v
+                  |> get_some
+                with
+                | FreeVar n -> n
+                | _ -> assert false
+              in
+              let b' =
+                minimal_inhabitant ~intersectionTable ~given ~canBeLambda:true t
+                  (new_vars @ workspace) b
+                |> get_some
+              in
+              LetRevClause (List.rev new_vars, v', d', b'))
     in
     Some p
 

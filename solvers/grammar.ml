@@ -224,6 +224,15 @@ let summary_likelihood (g : grammar) (s : likelihood_summary) =
   -. Hashtbl.fold s.normalizer_frequency ~init:0. ~f:(fun ~key ~data a ->
          a +. (data *. (key |> List.map ~f:(grammar_log_weight g) |> lse_list)))
 
+let merge_workspaces context ws1 ws2 =
+  Hashtbl.merge ws1 ws2 ~f:(fun ~key:_ -> function
+    | `Both (a, b) ->
+        let new_context = unify !context a b in
+        context := new_context;
+        Some (applyContext new_context a |> snd)
+    | `Left a -> Some a
+    | `Right b -> Some b)
+
 let make_likelihood_summary g request expression =
   let rec walk_application_tree tree =
     match tree with Apply (f, x) -> walk_application_tree f @ [ x ] | _ -> [ tree ]
@@ -232,23 +241,13 @@ let make_likelihood_summary g request expression =
   let s = empty_likelihood_summary () in
   let context = ref empty_context in
 
-  let merge_workspaces ws1 ws2 =
-    Hashtbl.merge ws1 ws2 ~f:(fun ~key:_ -> function
-      | `Both (a, b) ->
-          let new_context = unify !context a b in
-          context := new_context;
-          Some (applyContext new_context a |> snd)
-      | `Left a -> Some a
-      | `Right b -> Some b)
-  in
-
   let rec summarize (r : tp) (environment : tp list) (workspace : (string, tp) Hashtbl.t)
       (p : program) : (string, tp) Hashtbl.t =
     match r with
     (* a function - must start out with a sequence of lambdas *)
     | TNCon ("->", arguments, return_type, _) ->
         let new_workspace =
-          merge_workspaces workspace (Hashtbl.of_alist_exn (module String) arguments)
+          merge_workspaces context workspace (Hashtbl.of_alist_exn (module String) arguments)
         in
         let var_requests = summarize return_type environment new_workspace p in
         var_requests
@@ -264,13 +263,13 @@ let make_likelihood_summary g request expression =
             let var_def_requests =
               summarize (Hashtbl.find_exn var_requests name) environment workspace def
             in
-            let out_var_requests = merge_workspaces var_requests var_def_requests in
+            let out_var_requests = merge_workspaces context var_requests var_def_requests in
             Hashtbl.remove out_var_requests name;
             out_var_requests
         | LetRevClause (_var_names, inp_name, def, body) ->
             let inp_name_request = Hashtbl.find_exn workspace inp_name in
             let var_requests = summarize inp_name_request environment workspace def in
-            let merged_workspace = merge_workspaces workspace var_requests in
+            let merged_workspace = merge_workspaces context workspace var_requests in
             let var_body_requests = summarize r environment merged_workspace body in
             Hashtbl.set var_body_requests ~key:inp_name ~data:inp_name_request;
             var_body_requests
@@ -293,7 +292,9 @@ let make_likelihood_summary g request expression =
                       (candidates |> List.map ~f:(fun (candidate, _, _, _) -> candidate));
                     List.map (List.zip_exn xs argument_types) ~f:(fun (x, x_t) ->
                         summarize x_t environment workspace x)
-                    |> List.fold ~init:(Hashtbl.create (module String)) ~f:merge_workspaces)))
+                    |> List.fold
+                         ~init:(Hashtbl.create (module String))
+                         ~f:(merge_workspaces context))))
   in
 
   ignore (summarize request [] (Hashtbl.create (module String)) expression : (string, tp) Hashtbl.t);

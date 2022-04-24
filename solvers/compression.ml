@@ -99,18 +99,41 @@ let eta_long request e =
   let context = ref empty_context in
 
   let make_long e request =
-    if is_arrow request then Some (Abstraction (Apply (shift_free_variables 1 e, Index 0)))
-    else None
+    match request with
+    | TCon ("->", _, _) -> Some (Abstraction (Apply (shift_free_variables 1 e, Index 0)))
+    | _ -> None
   in
 
-  let rec visit request environment e =
-    match e with
-    | Abstraction b when is_arrow request ->
-        Abstraction (visit (right_of_arrow request) (left_of_arrow request :: environment) b)
-    | Abstraction _ -> raise EtaExpandFailure
+  let rec visit request environment workspace e =
+    match (e, request) with
+    | Abstraction b, TCon ("->", _, _) ->
+        let b', var_requests =
+          visit (right_of_arrow request) (left_of_arrow request :: environment) workspace b
+        in
+        (Abstraction b', var_requests)
+    | _, TNCon ("->", arguments, output, _) ->
+        let new_workspace =
+          merge_workspaces context workspace (Hashtbl.of_alist_exn (module String) arguments)
+        in
+        visit output environment new_workspace e
+    | Abstraction _, _ -> raise EtaExpandFailure
+    | LetClause (var_name, def, body), _ ->
+        let body', var_requests = visit request environment workspace body in
+        let def', var_requests' =
+          visit (Hashtbl.find_exn var_requests var_name) environment workspace def
+        in
+        ( LetClause (var_name, def', body'),
+          Grammar.merge_workspaces context var_requests var_requests' )
+    | LetRevClause (var_names, inp_name, def, body), _ ->
+        let inp_name_request = Hashtbl.find_exn workspace inp_name in
+        let def', def_var_requests = visit inp_name_request environment workspace def in
+        let merged_workspace = merge_workspaces context workspace def_var_requests in
+        let body', var_body_requests = visit request environment merged_workspace body in
+        Hashtbl.set var_body_requests ~key:inp_name ~data:inp_name_request;
+        (LetRevClause (var_names, inp_name, def', body'), var_body_requests)
     | _ -> (
         match make_long e request with
-        | Some e' -> visit request environment e'
+        | Some e' -> visit request environment workspace e'
         | None ->
             (* match e with *)
             (* | Index(i) -> (unify' context request (List.nth_exn environment i); e) *)
@@ -127,6 +150,14 @@ let eta_long request e =
               | Primitive (t, _, _) | Invented (t, _) -> instantiate_type' context t
               | Abstraction _ -> assert false (* not in beta long form *)
               | Apply (_, _) -> assert false
+              | Const _ | FreeVar _ -> request
+              | LetClause (_, _, _) | LetRevClause (_, _, _, _) ->
+                  raise (Failure "Eta-expand failure: LetClause or LetRevClause in application")
+            in
+            let var_requests =
+              match f with
+              | FreeVar n -> Hashtbl.of_alist_exn (module String) [ (n, request) ]
+              | _ -> Hashtbl.create (module String)
             in
             unify' context request (return_of_type ft);
             let ft = applyContext' context ft in
@@ -134,14 +165,18 @@ let eta_long request e =
             if List.length xs <> List.length xt then raise EtaExpandFailure
             else
               let xs' =
-                List.map2_exn xs xt ~f:(fun x t -> visit (applyContext' context t) environment x)
+                List.map2_exn xs xt ~f:(fun x t ->
+                    visit (applyContext' context t) environment workspace x)
               in
-              List.fold_left xs' ~init:f ~f:(fun return_value x -> Apply (return_value, x)))
+              List.fold_left xs' ~init:(f, var_requests)
+                ~f:(fun (return_f, return_var_reqs) (x, x_var_reqs) ->
+                  (Apply (return_f, x), Grammar.merge_workspaces context return_var_reqs x_var_reqs))
+        )
   in
 
-  let e' = visit request [] e in
+  let e', _ = visit request [] (Hashtbl.create (module String)) e in
 
-  assert (tp_eq (e |> closed_inference |> canonical_type) (e' |> closed_inference |> canonical_type));
+  (* assert (tp_eq (e |> closed_inference |> canonical_type) (e' |> closed_inference |> canonical_type)); *)
   e'
 
 let normalize_invention i =
@@ -183,7 +218,9 @@ let rewrite_with_invention i =
       match e with
       | Apply (f, x) -> Apply (visit f, visit x)
       | Abstraction b -> Abstraction (visit b)
-      | Index _ | Primitive (_, _, _) | Invented (_, _) -> e
+      | Index _ | Primitive (_, _, _) | Invented (_, _) | FreeVar _ | Const _ -> e
+      | LetClause (v, d, b) -> LetClause (v, visit d, visit b)
+      | LetRevClause (vns, inp_v, d, b) -> LetRevClause (vns, inp_v, visit d, visit b)
   in
   fun request e ->
     try
@@ -712,13 +749,20 @@ let compression_step ~inline ~structurePenalty ~aic ~pseudoCounts ?(arity = 3) ~
           let new_cost_table = empty_cheap_cost_table v in
           let new_frontiers =
             List.map !frontiers ~f:(fun frontier ->
+                let initial_workspace =
+                  match frontier.request with
+                  | TNCon (_, arguments, _, _) -> List.rev_map arguments ~f:fst
+                  | _ -> []
+                in
                 let programs' =
                   List.map frontier.programs ~f:(fun (originalProgram, ll) ->
                       let index =
-                        incorporate v originalProgram |> n_step_inversion v ~inline ~n:arity
+                        incorporate v frontier.request originalProgram
+                        |> n_step_inversion v ~inline ~n:arity
                       in
                       let program =
-                        minimal_inhabitant new_cost_table ~given:(Some i) index |> get_some
+                        minimal_inhabitant new_cost_table ~given:(Some i) initial_workspace index
+                        |> get_some
                       in
                       let program' =
                         try rewriter frontier.request program
