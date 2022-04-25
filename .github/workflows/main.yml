@@ -5,7 +5,7 @@ on:
 
 
 jobs:
-  build:
+  ocaml-build:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,7 +24,7 @@ jobs:
       - name: build solvers
         run: opam exec -- make
 
-      - name: run tests
+      - name: run ocaml tests
         run: opam exec -- dune runtest
 
       - name: generate patch with new binaries
@@ -56,9 +56,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-
-      - name: run ocaml tests
-        run: opam exec -- dune runtest
 
   create-virtualenv:
     runs-on: ubuntu-latest
@@ -132,7 +129,7 @@ jobs:
 
 
   test-list:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -164,7 +161,7 @@ jobs:
         run: python bin/list.py -t 2 -RS 5 -i 2
 
   test-text:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -196,7 +193,7 @@ jobs:
         run: python bin/text.py -t 2 -RS 5 -i 2
 
   test-logo:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -229,7 +226,7 @@ jobs:
         run: python bin/logo.py -t 5 -RS 10 --biasOptimal -i 2
 
   test-tower:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -261,7 +258,7 @@ jobs:
         run: python bin/tower.py -t 2 -RS 5 -i 2
 
   test-graph:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -328,7 +325,7 @@ jobs:
           -RS 10 -R 10 --pseudoCounts 30 -l -1000000 --aic -1000000 -g
 
   test-scientificLaws:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -363,7 +360,7 @@ jobs:
             --pseudoCounts 30 -l -1000000 --aic -1000000 -g
 
   test-regexes:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
     if: false

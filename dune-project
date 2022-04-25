@@ -11,7 +11,7 @@
  (synopsis "Dreamcoder package")
  (description "")
  (depends
-  core
+  (core (= v0.14.1))
   core_unix
   re2
   yojson
