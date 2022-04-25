@@ -19,11 +19,13 @@ jobs:
           dune-cache: true
 
       - name: install dependencies
-        run: opam exec -- dune external-lib-deps @@default | tail -n +2 |
-          awk '{print $2}' | grep -v "\." | xargs opam depext -iy
+        run: opam install . --deps-only --with-test
 
       - name: build solvers
         run: opam exec -- make
+
+      - name: run tests
+        run: opam exec -- dune runtest
 
       - name: generate patch with new binaries
         run: git diff --output=binaries_patch --binary
