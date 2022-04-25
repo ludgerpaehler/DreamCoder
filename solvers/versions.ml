@@ -229,6 +229,7 @@ let rec shift_free ?(c = 0) t ~n ~index =
         version_apply t (shift_free ~c t ~n ~index:f) (shift_free ~c t ~n ~index:x)
     | AbstractSpace b -> version_abstract t (shift_free ~c:(c + 1) t ~n ~index:b)
     | TerminalSpace _ | Universe | Void -> index
+    | LetSpace (_, _) | LetRevSpace (_, _, _, _) | VarIndexSpace _ -> assert false
 
 let rec shift_versions ?(c = 0) t ~n ~index =
   (* shift_free_variables, lifted to vs *)
@@ -243,34 +244,7 @@ let rec shift_versions ?(c = 0) t ~n ~index =
         version_apply t (shift_versions ~c t ~n ~index:f) (shift_versions ~c t ~n ~index:x)
     | AbstractSpace b -> version_abstract t (shift_versions ~c:(c + 1) t ~n ~index:b)
     | TerminalSpace _ | Universe | Void -> index
-
-let rec subtract t a b =
-  match (index_table t a, index_table t b) with
-  | Universe, _ -> assert false
-  | _, Universe -> assert false
-  | Void, _ -> t.void
-  | _, Void -> a
-  | Union xs, _ -> xs |> List.map ~f:(fun x -> subtract t x b) |> union t
-  | _, Union xs ->
-      List.fold_right xs ~init:a ~f:(fun to_remove current -> subtract t current to_remove)
-  | AbstractSpace b1, AbstractSpace b2 -> version_abstract t (subtract t b1 b2)
-  | AbstractSpace _, _ -> a
-  | ApplySpace (f1, x1), ApplySpace (f2, x2) ->
-      union t [ version_apply t (subtract t f1 f2) x1; version_apply t f1 (subtract t x1 x2) ]
-  | ApplySpace (_, _), _ -> a
-  | IndexSpace i1, IndexSpace i2 when i1 = i2 -> t.void
-  | IndexSpace _, _ -> a
-  | TerminalSpace t1, TerminalSpace t2 when equal_program t1 t2 -> t.void
-  | TerminalSpace _, _ -> a
-
-let rec unique_space t a =
-  match index_table t a with
-  | Universe | Void | IndexSpace _ | TerminalSpace _ -> a
-  | AbstractSpace b -> version_abstract t (unique_space t b)
-  | ApplySpace (f, x) -> version_apply t (unique_space t f) (unique_space t x)
-  | Union u ->
-      List.fold_right u ~init:t.void ~f:(fun u' total ->
-          union t [ total; subtract t (unique_space t u') total ])
+    | LetSpace (_, _) | LetRevSpace (_, _, _, _) | VarIndexSpace _ -> assert false
 
 let rec intersection t a b =
   match (index_table t a, index_table t b) with
@@ -318,6 +292,7 @@ let inline t j =
                 (apply_substitution ~k arguments x)
           | Abstraction b -> version_abstract t (apply_substitution ~k:(k + 1) arguments b)
           | Primitive (_, _, _) | Invented (_, _) -> incorporate' t [] expression
+          | LetClause (_, _, _) | LetRevClause (_, _, _, _) | FreeVar _ | Const _ -> assert false
         in
         match make_substitution [] arguments body with
         | None -> t.void
@@ -353,7 +328,11 @@ let rec recursive_inlining t j =
         match index_table t j with
         | ApplySpace (f, x) -> version_apply t f (recursive_inlining t x)
         | Union u -> u |> List.map ~f:inline_arguments |> union t
-        | AbstractSpace _ | TerminalSpace _ | Universe | Void | IndexSpace _ -> t.void
+        | AbstractSpace _ | TerminalSpace _ | Universe | Void | IndexSpace _
+        | LetSpace (_, _)
+        | LetRevSpace (_, _, _, _)
+        | VarIndexSpace _ ->
+            t.void
       in
       let argument_linings = inline_arguments j in
       union t [ top_linings; argument_linings ]

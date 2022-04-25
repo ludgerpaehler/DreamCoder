@@ -310,7 +310,11 @@ let rec substitute_constant_regex constant p = match p with
                          substitute_constant_regex constant x)
   | Invented(t,b) -> Invented(t, substitute_constant_regex constant b)
   | Primitive(_,"r_const",_) -> constant
-  | Index(_) | Primitive(_,_,_) -> p
+  | LetClause(v, d, b) -> LetClause(v, substitute_constant_regex constant d,
+                                    substitute_constant_regex constant b)
+  | LetRevClause(v, iv, d, b) -> LetRevClause(v, iv, substitute_constant_regex constant d,
+                                              substitute_constant_regex constant b)
+  | Index(_) | Primitive(_,_,_) | FreeVar _ | Const _ -> p
 
 let disallowed_regex = Hashtbl.Poly.create ();;
 let constant_to_regex = Hashtbl.Poly.create();;

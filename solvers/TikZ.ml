@@ -201,7 +201,7 @@ let score_latex output =
   fun program -> begin
       if List.exists (0--100) ~f:(fun _ ->
           let p = random_instantiation ~x:false ~i:C program in
-          let v : command list = evaluate [] p |> magical |> canonical_command_list in
+          let v : command list = evaluate [] (Hashtbl.create (module String)) p |> magical |> canonical_command_list in
           equal_list equal_command v output)
       then begin Printf.eprintf "PROGRAM: %s\n" (string_of_program program);
         10.*. likelihood_penalty program

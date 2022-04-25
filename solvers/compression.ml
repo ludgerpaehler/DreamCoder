@@ -301,12 +301,18 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
             let rec program_size = function
               | Apply (f, x) -> 1 + program_size f + program_size x
               | Abstraction b -> 1 + program_size b
-              | Index _ | Invented (_, _) | Primitive (_, _, _) -> 1
+              | Index _ | Invented (_, _) | Primitive (_, _, _) | Const _ -> 1
+              | LetClause (_, d, b) -> 1 + program_size d + program_size b
+              | LetRevClause (_, _, d, b) -> 1 + program_size d + program_size b
+              | FreeVar _ -> 1
             in
             let rec program_height = function
               | Apply (f, x) -> 1 + max (program_height f) (program_height x)
               | Abstraction b -> 1 + program_height b
-              | Index _ | Invented (_, _) | Primitive (_, _, _) -> 1
+              | Index _ | Invented (_, _) | Primitive (_, _, _) | Const _ -> 1
+              | LetClause (_, d, b) -> 1 + max (program_height d) (program_height b)
+              | LetRevClause (_, _, d, b) -> 1 + max (program_height d) (program_height b)
+              | FreeVar _ -> 1
             in
             Printf.eprintf "DATA\t%s\tsize=%d\theight=%d\t|vs|=%d\t|[vs]|=%f\n"
               (string_of_program p) (program_size p) (program_height p)
@@ -395,7 +401,8 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
               let programs' =
                 List.map frontier.programs ~f:(fun (originalProgram, ll) ->
                     let index =
-                      incorporate v frontier.request originalProgram |> n_step_inversion ~inline v ~n:arity
+                      incorporate v frontier.request originalProgram
+                      |> n_step_inversion ~inline v ~n:arity
                     in
                     let program =
                       minimal_inhabitant ~intersectionTable new_cost_table ~given:(Some i)
@@ -426,7 +433,8 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
         let frontier_requests = !frontiers |> List.map ~f:(fun f -> f.request) in
         clear_dynamic_programming_tables v;
         let refactored =
-          batched_refactor ~ct:(empty_cost_table v) invention_indices frontier_requests frontier_indices
+          batched_refactor ~ct:(empty_cost_table v) invention_indices frontier_requests
+            frontier_indices
         in
         Gc.compact ();
         List.map2_exn refactored inventions ~f:(fun new_programs invention ->
@@ -436,18 +444,18 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
                   List.map2_exn new_programs frontier.programs
                     ~f:(fun program (originalProgram, ll) ->
                       (* if
-                        not
-                          (program_equal
-                             (beta_normal_form ~reduceInventions:true program)
-                             (beta_normal_form ~reduceInventions:true originalProgram))
-                      then (
-                        Printf.eprintf "FATAL: %s refactored into %s\n"
-                          (string_of_program originalProgram)
-                          (string_of_program program);
-                        Printf.eprintf
-                          "This has never occurred before! Definitely send this to Kevin, if this \
-                           occurs it is a terrifying bug.\n";
-                        assert false); *)
+                           not
+                             (program_equal
+                                (beta_normal_form ~reduceInventions:true program)
+                                (beta_normal_form ~reduceInventions:true originalProgram))
+                         then (
+                           Printf.eprintf "FATAL: %s refactored into %s\n"
+                             (string_of_program originalProgram)
+                             (string_of_program program);
+                           Printf.eprintf
+                             "This has never occurred before! Definitely send this to Kevin, if this \
+                              occurs it is a terrifying bug.\n";
+                           assert false); *)
                       let program' =
                         try rewriter frontier.request program
                         with EtaExpandFailure -> originalProgram
@@ -488,7 +496,8 @@ let compression_worker connection ~inline ~arity ~bs ~topK g frontiers =
             let programs' =
               List.map frontier.programs ~f:(fun (originalProgram, ll) ->
                   let index =
-                    Hashtbl.find_exn frontier_inversions (incorporate v frontier.request originalProgram)
+                    Hashtbl.find_exn frontier_inversions
+                      (incorporate v frontier.request originalProgram)
                   in
                   let program =
                     minimal_inhabitant new_cost_table ~given:(Some i) initial_workspace index

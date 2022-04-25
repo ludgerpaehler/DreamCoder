@@ -344,6 +344,10 @@ let dfs_around_skeleton cg ~maxFreeParameters ~lower_bound ~upper_bound state k 
     | Primitive(_,"??",_) -> true
     | Invented(_,_) -> false
     | Primitive(_,_,_) -> false
+    | FreeVar _ -> false
+    | Const _ -> false
+    | LetClause (_, d, b) -> free b || free d
+    | LetRevClause (_, _, d, b) -> free b || free d
   in
 
   let rec parent_index = function

@@ -37,7 +37,10 @@ let rec application_parse = function
 let rec program_size = function
   | Apply (f, x) -> program_size f + program_size x
   | Abstraction b -> program_size b
-  | Index _ | Invented (_, _) | Primitive (_, _, _) -> 1
+  | Index _ | Invented (_, _) | Primitive (_, _, _) | Const _ -> 1
+  | LetClause (_, d, b) -> program_size d + program_size b
+  | LetRevClause (_, _, d, b) -> program_size d + program_size b
+  | FreeVar _ -> 1
 
 let rec program_subexpressions p =
   p :: (List.map (program_children p) ~f:program_subexpressions |> List.concat)
@@ -134,6 +137,8 @@ let rec infer_program_type context environment p : tContext * tp =
       let context, ft = infer_program_type context environment f in
       let context = unify context ft (xt @> rt) in
       applyContext context rt
+  | _ ->
+      raise (Failure ("Inferring program type is currently not supported: " ^ string_of_program p))
 
 let closed_inference = snd % infer_program_type empty_context []
 let make_invention i = Invented (closed_inference i |> canonical_type, i)
@@ -145,84 +150,131 @@ let every_primitive : program String.Table.t = String.Table.create ()
 let lookup_primitive n =
   try Hashtbl.find_exn every_primitive n with _ -> raise (UnknownPrimitive n)
 
-let[@warning "-20"] rec evaluate (environment : 'b list) (p : program) : 'a =
+let[@warning "-20"] rec evaluate (environment : 'b list) (workspace : (string, 'c) Hashtbl.t)
+    (p : program) : 'a =
   match p with
   | Apply (Apply (Apply (Primitive (_, "if", _), branch), yes), no) ->
-      if magical (evaluate environment branch) then evaluate environment yes
-      else evaluate environment no
-  | Abstraction b -> magical @@ fun argument -> evaluate (argument :: environment) b
+      if magical (evaluate environment workspace branch) then evaluate environment workspace yes
+      else evaluate environment workspace no
+  | Abstraction b -> magical @@ fun argument -> evaluate (argument :: environment) workspace b
   | Index j -> magical @@ List.nth_exn environment j
-  | Apply (f, x) -> (magical @@ evaluate environment f) (magical @@ evaluate environment x)
+  | Apply (f, x) ->
+      (magical @@ evaluate environment workspace f) (magical @@ evaluate environment workspace x)
   | Primitive (_, _, v) -> magical !v
-  | Invented (_, i) -> evaluate [] i
+  | Invented (_, i) -> evaluate [] workspace i
+  | Const _ -> assert false (* There is no instantiation of const objects currently in OCaml *)
+  | LetClause (v, d, b) ->
+      let v_val = evaluate environment workspace d in
+      let () = Hashtbl.add_exn workspace ~key:v ~data:v_val in
+      evaluate environment workspace b
+  | LetRevClause (_vns, _iv, _d, _b) ->
+      assert false (* There are no reversed functions currently in OCaml *)
+  | FreeVar v -> magical (Hashtbl.find_exn workspace v)
 
-let rec analyze_evaluation (p : program) : 'b list -> 'a =
+let rec analyze_evaluation (p : program) : 'b list -> (string, 'c) Hashtbl.t -> 'a =
   match p with
   | Apply (Apply (Apply (Primitive (_, "if", _), branch), yes), no) ->
       let branch = analyze_evaluation branch
       and yes = analyze_evaluation yes
       and no = analyze_evaluation no in
-      fun environment -> if magical (branch environment) then yes environment else no environment
+      fun environment workspace ->
+        if magical (branch environment workspace) then yes environment workspace
+        else no environment workspace
   | Abstraction b ->
       let body = analyze_evaluation b in
-      fun environment -> magical (fun x -> body (x :: environment))
-  | Index j -> fun environment -> List.nth_exn environment j |> magical
+      fun environment workspace -> magical (fun x -> body (x :: environment) workspace)
+  | Index j -> fun environment _ -> List.nth_exn environment j |> magical
   | Apply (f, x) ->
       let analyzed_function = analyze_evaluation f and analyzed_argument = analyze_evaluation x in
-      fun environment ->
-        magical ((analyzed_function environment) (magical (analyzed_argument environment)))
-  | Primitive (_, _, v) -> fun _ -> magical !v
+      fun environment workspace ->
+        magical
+          ((analyzed_function environment workspace)
+             (magical (analyzed_argument environment workspace)))
+  | Primitive (_, _, v) -> fun _ _ -> magical !v
   | Invented (_, i) ->
       let analyzed_body = analyze_evaluation i in
-      fun _ -> analyzed_body []
+      fun _ workspace -> analyzed_body [] workspace
+  | Const _ -> assert false (* There is no instantiation of const objects currently in OCaml *)
+  | LetClause (v, d, b) ->
+      let analyzed_definition = analyze_evaluation d and analyzed_body = analyze_evaluation b in
+      fun environment workspace ->
+        let v_val = analyzed_definition environment workspace in
+        let () = Hashtbl.add_exn workspace ~key:v ~data:v_val in
+        analyzed_body environment workspace
+  | LetRevClause (_vns, _iv, _d, _b) ->
+      assert false (* There are no reversed functions currently in OCaml *)
+  | FreeVar v -> fun _ workspace -> magical (Hashtbl.find_exn workspace v)
 
 let run_with_arguments (p : program) (arguments : 'a list) =
   let rec loop l xs = match xs with [] -> magical l | x :: xs -> loop (magical (l x)) xs in
-  loop (evaluate [] p) arguments
+  loop (evaluate [] (Hashtbl.create (module String)) p) arguments
 
-let run_analyzed_with_arguments (p : 'b list -> 'c) (arguments : 'a list) =
+let run_analyzed_with_arguments (p : 'b list -> (string, 'd) Hashtbl.t -> 'c) (arguments : 'a list)
+    =
   let rec loop l xs = match xs with [] -> magical l | x :: xs -> loop (magical (l x)) xs in
-  loop (p []) arguments
+  loop (p [] (Hashtbl.create (module String))) arguments
 
-let[@warning "-20"] rec lazy_evaluate (environment : 'b Lazy.t list) (p : program) : 'a Lazy.t =
+let[@warning "-20"] rec lazy_evaluate (environment : 'b Lazy.t list)
+    (workspace : (string, 'c Lazy.t) Hashtbl.t) (p : program) : 'a Lazy.t =
   (* invariant: always return thunks *)
   match p with
   (* Notice that we do not need to special case conditionals. In lazy
      evaluation conditionals are function just like any other. *)
   | Abstraction b ->
-      lazy (magical @@ fun argument -> Lazy.force (lazy_evaluate (argument :: environment) b))
+      lazy
+        (magical @@ fun argument -> Lazy.force (lazy_evaluate (argument :: environment) workspace b))
   | Index j -> magical @@ List.nth_exn environment j
   | Apply (f, x) ->
       lazy
-        ((Lazy.force @@ magical @@ lazy_evaluate environment f)
-           (magical @@ lazy_evaluate environment x))
+        ((Lazy.force @@ magical @@ lazy_evaluate environment workspace f)
+           (magical @@ lazy_evaluate environment workspace x))
   | Primitive (_, _, v) -> lazy (magical !v)
-  | Invented (_, i) -> lazy_evaluate [] i
+  | Invented (_, i) -> lazy_evaluate [] workspace i
+  | Const _ -> assert false (* There is no instantiation of const objects currently in OCaml *)
+  | FreeVar v -> magical (Hashtbl.find_exn workspace v)
+  | LetClause (v, d, b) ->
+      let v_val = lazy_evaluate environment workspace d in
+      let () = Hashtbl.add_exn workspace ~key:v ~data:v_val in
+      lazy_evaluate environment workspace b
+  | LetRevClause (_vns, _iv, _d, _b) ->
+      assert false (* There are no reversed functions currently in OCaml *)
 
-let[@warning "-20"] rec analyze_lazy_evaluation (p : program) : 'b Lazy.t list -> 'a Lazy.t =
+let[@warning "-20"] rec analyze_lazy_evaluation (p : program) :
+    'b Lazy.t list -> (string, 'c Lazy.t) Hashtbl.t -> 'a Lazy.t =
   match p with
   (* Notice that we do not need to special case conditionals. In lazy
      evaluation conditionals are function just like any other. *)
   | Abstraction b ->
       let body = analyze_lazy_evaluation b in
-      fun environment ->
-        lazy (magical @@ fun argument -> Lazy.force (body (argument :: environment)))
+      fun environment workspace ->
+        lazy (magical @@ fun argument -> Lazy.force (body (argument :: environment) workspace))
   | Index j -> fun environment -> magical @@ List.nth_exn environment j
   | Apply (f, x) ->
       let analyzed_function = analyze_lazy_evaluation f
       and analyzed_argument = analyze_lazy_evaluation x in
-      fun environment ->
+      fun environment workspace ->
         lazy
-          ((Lazy.force @@ magical @@ analyzed_function environment)
-             (magical @@ analyzed_argument environment))
-  | Primitive (_, _, v) -> fun _ -> lazy (magical !v)
+          ((Lazy.force @@ magical @@ analyzed_function environment workspace)
+             (magical @@ analyzed_argument environment workspace))
+  | Primitive (_, _, v) -> fun _ _ -> lazy (magical !v)
   | Invented (_, i) ->
       let analyzed_body = analyze_lazy_evaluation i in
-      fun _ -> analyzed_body []
+      fun _ workspace -> analyzed_body [] workspace
+  | Const _ -> assert false (* There is no instantiation of const objects currently in OCaml *)
+  | FreeVar v -> fun _ workspace -> magical (Hashtbl.find_exn workspace v)
+  | LetClause (v, d, b) ->
+      let analyzed_definition = analyze_lazy_evaluation d
+      and analyzed_body = analyze_lazy_evaluation b in
+      fun environment workspace ->
+        let v_val = analyzed_definition environment workspace in
+        let () = Hashtbl.add_exn workspace ~key:v ~data:v_val in
+        analyzed_body environment workspace
+  | LetRevClause (_vns, _iv, _d, _b) ->
+      assert false (* There are no reversed functions currently in OCaml *)
 
 let[@warning "-20"] run_lazy_analyzed_with_arguments p arguments =
   let rec go l xs = match xs with [] -> l |> magical | x :: xs -> go (lazy x |> magical l) xs in
-  go (p [] |> Lazy.force) arguments
+  go (p [] (Hashtbl.create (module String)) |> Lazy.force) arguments
 
 let rec remove_abstractions (n : int) (q : program) : program =
   match (n, q) with
@@ -237,6 +289,7 @@ let rec variable_is_bound ?(height = 0) (p : program) =
   | Invented (_, i) -> variable_is_bound ~height i
   | Primitive (_, _, _) -> false
   | Abstraction b -> variable_is_bound ~height:(height + 1) b
+  | LetClause (_, _, _) | LetRevClause (_, _, _, _) | FreeVar _ | Const _ -> false
 
 exception ShiftFailure
 
@@ -520,13 +573,29 @@ let rec substitute_string_constants (alternatives : char list list) e =
   | Abstraction b ->
       substitute_string_constants alternatives b |> List.map ~f:(fun b' -> Abstraction b')
   | Index _ -> [ e ]
+  | Const _ -> [ e ]
+  | FreeVar _ -> [ e ]
+  | LetClause (v, d, b) ->
+      substitute_string_constants alternatives d
+      |> List.map ~f:(fun d' ->
+             substitute_string_constants alternatives b
+             |> List.map ~f:(fun b' -> LetClause (v, d', b')))
+      |> List.concat
+  | LetRevClause (vs, iv, d, b) ->
+      substitute_string_constants alternatives d
+      |> List.map ~f:(fun d' ->
+             substitute_string_constants alternatives b
+             |> List.map ~f:(fun b' -> LetRevClause (vs, iv, d', b')))
+      |> List.concat
 
 let rec number_of_string_constants = function
   | Primitive (_, "STRING", _) -> 1
   | Primitive (_, _, _) -> 0
   | Invented (_, b) | Abstraction b -> number_of_string_constants b
   | Apply (f, x) -> number_of_string_constants f + number_of_string_constants x
-  | Index _ -> 0
+  | Index _ | FreeVar _ | Const _ -> 0
+  | LetClause (_, d, b) | LetRevClause (_, _, d, b) ->
+      number_of_string_constants d + number_of_string_constants b
 
 let rec string_constants_length = function
   | Primitive (_, "STRING", v) ->
@@ -535,14 +604,18 @@ let rec string_constants_length = function
   | Primitive (_, _, _) -> 0
   | Invented (_, b) | Abstraction b -> string_constants_length b
   | Apply (f, x) -> string_constants_length f + string_constants_length x
-  | Index _ -> 0
+  | Index _ | FreeVar _ | Const _ -> 0
+  | LetClause (_, d, b) | LetRevClause (_, _, d, b) ->
+      string_constants_length d + string_constants_length b
 
 let rec number_of_real_constants = function
   | Primitive (_, "REAL", _) -> 1
   | Primitive (_, _, _) -> 0
   | Invented (_, b) | Abstraction b -> number_of_real_constants b
   | Apply (f, x) -> number_of_real_constants f + number_of_real_constants x
-  | Index _ -> 0
+  | Index _ | FreeVar _ | Const _ -> 0
+  | LetClause (_, d, b) | LetRevClause (_, _, d, b) ->
+      number_of_real_constants d + number_of_real_constants b
 
 let rec number_of_free_parameters = function
   | Primitive (_, "REAL", _)
@@ -553,7 +626,9 @@ let rec number_of_free_parameters = function
   | Primitive (_, _, _) -> 0
   | Invented (_, b) | Abstraction b -> number_of_free_parameters b
   | Apply (f, x) -> number_of_free_parameters f + number_of_free_parameters x
-  | Index _ -> 0
+  | Index _ | FreeVar _ | Const _ -> 0
+  | LetClause (_, d, b) | LetRevClause (_, _, d, b) ->
+      number_of_free_parameters d + number_of_free_parameters b
 
 let primitive_empty = primitive "empty" (tlist t0) []
 let primitive_range = primitive "range" (tint @> tlist tint) (fun x -> 0 -- (x - 1))
@@ -898,7 +973,7 @@ let program_parser : program parsing =
     let t =
       try infer_program_type empty_context [] p |> snd
       with UnificationFailure | UnboundVariable ->
-        Printf.printf "WARNING: Could not type check invented %s\n" (string_of_program p);
+        (* Printf.eprintf "WARNING: Could not type check invented %s\n" (string_of_program p); *)
         t0
     in
     return_parse (Invented (t, p))
@@ -985,7 +1060,9 @@ let%test _ =
 
 let%test _ = test_program_inference (Abstraction (Abstraction (Index 1))) (t0 @> t1 @> t0)
 let%test _ = test_program_inference (Abstraction (Abstraction (Index 0))) (t0 @> t1 @> t1)
-let%test _ = evaluate [] (Apply (primitive_increment, primitive0)) = 1
+
+let%test _ =
+  evaluate [] (Hashtbl.create (module String)) (Apply (primitive_increment, primitive0)) = 1
 
 let parsing_test_case s =
   let po = parse_program s in
@@ -1024,9 +1101,10 @@ let[@warning "-20"] performance_test_case () =
       |> List.iter ~f:(fun j ->
              if j = n then
                Printf.printf "%s\n"
-                 (evaluate [] e xs |> List.map ~f:Int.to_string |> join ~separator:" ")
-             else ignore (evaluate [] e xs : unit)));
-  let c = analyze_evaluation e [] in
+                 (evaluate [] (Hashtbl.create (module String)) e xs
+                 |> List.map ~f:Int.to_string |> join ~separator:" ")
+             else ignore (evaluate [] (Hashtbl.create (module String)) e xs : unit)));
+  let c = analyze_evaluation e [] (Hashtbl.create (module String)) in
   time_it "evaluate analyzed program many times" (fun () ->
       0 -- n
       |> List.iter ~f:(fun j ->
