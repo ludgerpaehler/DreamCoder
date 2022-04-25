@@ -10,4 +10,5 @@
 
 (library
  (name geomLib)
+ (public_name dreamcoder.geomLib)
  (libraries vg vg.cairo cairo2))

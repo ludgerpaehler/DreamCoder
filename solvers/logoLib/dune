@@ -1,3 +1,4 @@
 (library
  (name logoLib)
+ (public_name dreamcoder.logoLib)
  (libraries vg vg.cairo cairo2))
