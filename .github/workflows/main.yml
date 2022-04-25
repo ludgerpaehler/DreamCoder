@@ -292,7 +292,7 @@ jobs:
           python bin/graphs.py -i 20 --checkpoints tests/resources/kellis_list_exp.pickle --export tests/out/test.png
 
   test-rational:
-    needs: [build, create-virtualenv]
+    needs: [ocaml-build, create-virtualenv]
     runs-on: ubuntu-latest
     continue-on-error: true
 
