@@ -2,7 +2,7 @@ open Core
 
 open [@warning "-33"] Physics
 open [@warning "-33"] Pregex
-open [@warning "-33"] Tower
+open Tower
 (* open Vs *)
 open [@warning "-33"] Differentiation
 open [@warning "-33"] TikZ
@@ -130,7 +130,7 @@ let export_frontiers number_enumerated tf solutions : string =
 
 
 let run_solver () :unit =
-
+  register_tower_primitives ();
   let (tf,g,
        lowerBound,upperBound,budgetIncrement,
        mfp,

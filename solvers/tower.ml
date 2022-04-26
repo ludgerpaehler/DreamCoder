@@ -50,7 +50,7 @@ let block w h =
   ignore(primitive n (ttower @> ttower) v : program)
 ;;
 
-let _ : unit =
+let register_tower_primitives () : unit =
 block 3 1;
 block 1 3;
 block 1 1;
