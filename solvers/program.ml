@@ -239,42 +239,32 @@ let[@warning "-20"] rec lazy_evaluate (environment : 'b Lazy.t list)
   | LetRevClause (_vns, _iv, _d, _b) ->
       assert false (* There are no reversed functions currently in OCaml *)
 
-let[@warning "-20"] rec analyze_lazy_evaluation (p : program) :
-    'b Lazy.t list -> (string, 'c Lazy.t) Hashtbl.t -> 'a Lazy.t =
+let[@warning "-20"] rec analyze_lazy_evaluation (p : program) : 'b Lazy.t list -> 'a Lazy.t =
   match p with
   (* Notice that we do not need to special case conditionals. In lazy
      evaluation conditionals are function just like any other. *)
   | Abstraction b ->
       let body = analyze_lazy_evaluation b in
-      fun environment workspace ->
-        lazy (magical @@ fun argument -> Lazy.force (body (argument :: environment) workspace))
+      fun environment ->
+        lazy (magical @@ fun argument -> Lazy.force (body (argument :: environment)))
   | Index j -> fun environment -> magical @@ List.nth_exn environment j
   | Apply (f, x) ->
       let analyzed_function = analyze_lazy_evaluation f
       and analyzed_argument = analyze_lazy_evaluation x in
-      fun environment workspace ->
+      fun environment ->
         lazy
-          ((Lazy.force @@ magical @@ analyzed_function environment workspace)
-             (magical @@ analyzed_argument environment workspace))
-  | Primitive (_, _, v) -> fun _ _ -> lazy (magical !v)
+          ((Lazy.force @@ magical @@ analyzed_function environment)
+             (magical @@ analyzed_argument environment))
+  | Primitive (_, _, v) -> fun _ -> lazy (magical !v)
   | Invented (_, i) ->
       let analyzed_body = analyze_lazy_evaluation i in
-      fun _ workspace -> analyzed_body [] workspace
-  | Const _ -> assert false (* There is no instantiation of const objects currently in OCaml *)
-  | FreeVar v -> fun _ workspace -> magical (Hashtbl.find_exn workspace v)
-  | LetClause (v, d, b) ->
-      let analyzed_definition = analyze_lazy_evaluation d
-      and analyzed_body = analyze_lazy_evaluation b in
-      fun environment workspace ->
-        let v_val = analyzed_definition environment workspace in
-        let () = Hashtbl.add_exn workspace ~key:v ~data:v_val in
-        analyzed_body environment workspace
-  | LetRevClause (_vns, _iv, _d, _b) ->
-      assert false (* There are no reversed functions currently in OCaml *)
+      fun _ -> analyzed_body []
+  | Const _ | LetClause (_, _, _) | FreeVar _ | LetRevClause (_, _, _, _) ->
+      assert false (* Let clauses are not supported for lazy evaluation *)
 
 let[@warning "-20"] run_lazy_analyzed_with_arguments p arguments =
   let rec go l xs = match xs with [] -> l |> magical | x :: xs -> go (lazy x |> magical l) xs in
-  go (p [] (Hashtbl.create (module String)) |> Lazy.force) arguments
+  go (p [] |> Lazy.force) arguments
 
 let rec remove_abstractions (n : int) (q : program) : program =
   match (n, q) with
