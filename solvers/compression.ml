@@ -925,6 +925,7 @@ let compression_loop ?(nc = 1) ~structurePenalty ~inline ~aic ~topK ~pseudoCount
   time_it "completed ocaml compression" (fun () -> loop ~iterations g frontiers)
 
 let run_compression () =
+  register_tower_primitives ();
   let open Yojson.Basic.Util in
   let open Yojson.Basic in
   let j =
