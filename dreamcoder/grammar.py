@@ -283,12 +283,13 @@ class Grammar(object):
                 silent=silent,
             )
             for var_name, var_type in request.arguments.items():
-                try:
-                    context.unify(var_requests[var_name], var_type)
-                except UnificationFailure:
-                    if not silent:
-                        eprint(f"Expected {var_name} to be {var_requests[var_name]} but got {var_type}")
-                    assert False
+                if var_name in var_requests:
+                    try:
+                        context.unify(var_requests[var_name], var_type)
+                    except UnificationFailure:
+                        if not silent:
+                            eprint(f"Expected {var_name} to be {var_requests[var_name]} but got {var_type}")
+                        assert False
             return context, var_requests, summary
         if request.isArrow():
             if not isinstance(expression, Abstraction):
