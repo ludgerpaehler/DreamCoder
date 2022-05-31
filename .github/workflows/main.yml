@@ -96,8 +96,6 @@ jobs:
   test-julia:
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        julia-version: ['1.7']
       fail-fast: false
 
     steps:
@@ -107,7 +105,7 @@ jobs:
       - name: Setup Julia
         uses: julia-actions/setup-julia@latest
         with:
-          version: ${{ matrix.julia-version }}
+          version: '1.7'
 
       - uses: julia-actions/julia-buildpkg@latest
         with:
