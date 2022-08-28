@@ -105,7 +105,7 @@ jobs:
       - name: Setup Julia
         uses: julia-actions/setup-julia@latest
         with:
-          version: '1.7'
+          version: '1.8'
 
       - uses: julia-actions/julia-buildpkg@latest
         with:
@@ -136,7 +136,7 @@ jobs:
       - name: Setup Julia
         uses: julia-actions/setup-julia@latest
         with:
-          version: '1.7'
+          version: '1.8'
 
       - name: Download binaries patch
         uses: actions/download-artifact@v2
